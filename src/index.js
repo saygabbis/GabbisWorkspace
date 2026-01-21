@@ -1,7 +1,7 @@
 import { client } from "./client.js";
 import { ENV } from "./config/env.js";
 
-client.once("clientReady", (c) => {
+client.once("ready", (c) => {
   console.log(`✅ Logged in as ${c.user.tag}`);
 });
 
