@@ -3,6 +3,8 @@ import {
   addProtection, 
   removeProtection, 
   listProtections,
+  updateProtection,
+  getProtectionsByTargetAndTrigger,
   setLogChannel,
   removeLogChannel
 } from "../state/guildConfigs.js";
@@ -28,6 +30,24 @@ export default {
             .setDescription("Quem dispara a proteção")
             .setRequired(true)
         )
+        .addStringOption(opt =>
+          opt
+            .setName("modo")
+            .setDescription("Modo de proteção")
+            .setRequired(false)
+            .addChoices(
+              { name: "Instant (padrão)", value: "instant" },
+              { name: "Persistent", value: "persistent" }
+            )
+        )
+        .addIntegerOption(opt =>
+          opt
+            .setName("cooldown")
+            .setDescription("Janela de proteção em segundos (1-10, padrão: 2, apenas para modo Instant)")
+            .setRequired(false)
+            .setMinValue(1)
+            .setMaxValue(10)
+        )
     )
     .addSubcommand(sub =>
       sub
@@ -44,6 +64,61 @@ export default {
             .setName("trigger")
             .setDescription("Quem dispara a proteção")
             .setRequired(true)
+        )
+        .addStringOption(opt =>
+          opt
+            .setName("modo")
+            .setDescription("Modo de proteção a remover")
+            .setRequired(false)
+            .addChoices(
+              { name: "Instant", value: "instant" },
+              { name: "Persistent", value: "persistent" }
+            )
+        )
+    )
+    .addSubcommand(sub =>
+      sub
+        .setName("edit")
+        .setDescription("Edita uma proteção existente")
+        .addUserOption(opt =>
+          opt
+            .setName("target")
+            .setDescription("Usuário protegido")
+            .setRequired(true)
+        )
+        .addUserOption(opt =>
+          opt
+            .setName("trigger")
+            .setDescription("Quem dispara a proteção")
+            .setRequired(true)
+        )
+        .addStringOption(opt =>
+          opt
+            .setName("modo-atual")
+            .setDescription("Modo atual da proteção (necessário se houver múltiplas proteções)")
+            .setRequired(false)
+            .addChoices(
+              { name: "Instant", value: "instant" },
+              { name: "Persistent", value: "persistent" }
+            )
+        )
+        .addStringOption(opt =>
+          opt
+            .setName("modo")
+            .setDescription("Novo modo de proteção")
+            .setRequired(false)
+            .addChoices(
+              { name: "Instant", value: "instant" },
+              { name: "Persistent", value: "persistent" }
+            )
+        )
+        .addIntegerOption(opt =>
+          opt
+            .setName("cooldown")
+            .setDescription("Nova janela de proteção em segundos (1-10, apenas para modo Instant)")
+            .setRequired(false)
+            .setMinValue(1)
+            .setMaxValue(10)
         )
     )
     .addSubcommand(sub =>
@@ -134,42 +209,180 @@ export default {
       if (sub === "add") {
         const target = interaction.options.getUser("target");
         const trigger = interaction.options.getUser("trigger");
+        const mode = interaction.options.getString("modo") || "instant";
+        const cooldownSeconds = interaction.options.getInteger("cooldown");
+
+        // Validação: modo Persistent não deve ter cooldown
+        if (mode === "persistent" && cooldownSeconds !== null) {
+          return interaction.editReply(
+            "⚠️ O modo Persistent não usa cooldown. O trigger será bloqueado enquanto o target estiver na call."
+          );
+        }
+
+        // Converte cooldown em milissegundos (padrão 2s = 2000ms)
+        const timeWindow = cooldownSeconds ? cooldownSeconds * 1000 : 2000;
 
         const success = addProtection(
           interaction.guild.id,
           target.id,
-          trigger.id
+          trigger.id,
+          timeWindow,
+          mode
         );
 
         if (!success) {
           return interaction.editReply(
-            "⚠️ Essa proteção já existe."
+            "⚠️ Essa proteção já existe. Não é possível criar a mesma proteção (target + trigger + modo) duas vezes."
           );
         }
 
+        const modeText = mode === "persistent" ? "Persistent" : "Instant";
+        const cooldownText = mode === "instant" ? ` (cooldown: ${timeWindow}ms)` : "";
+
         return interaction.editReply(
-          `✅ Proteção criada: **${target.username}** protegido de **${trigger.username}**`
+          `✅ Proteção criada: **${target.username}** protegido de **${trigger.username}**\n` +
+          `Modo: **${modeText}**${cooldownText}`
         );
       }
 
       if (sub === "remove") {
         const target = interaction.options.getUser("target");
         const trigger = interaction.options.getUser("trigger");
+        const mode = interaction.options.getString("modo");
 
+        // Se modo não foi especificado, remove todas as proteções com target + trigger (compatibilidade)
+        // Se modo foi especificado, remove apenas a proteção do modo especificado
         const success = removeProtection(
           interaction.guild.id,
           target.id,
-          trigger.id
+          trigger.id,
+          mode || null
         );
 
         if (!success) {
+          if (mode) {
+            return interaction.editReply(
+              `⚠️ Proteção não encontrada: **${target.username}** protegido de **${trigger.username}** no modo **${mode === "persistent" ? "Persistent" : "Instant"}**.`
+            );
+          } else {
+            return interaction.editReply(
+              "⚠️ Nenhuma proteção encontrada com essa combinação de target e trigger."
+            );
+          }
+        }
+
+        const modeText = mode ? ` no modo **${mode === "persistent" ? "Persistent" : "Instant"}**` : "";
+        return interaction.editReply(
+          `✅ Proteção removida: **${target.username}** protegido de **${trigger.username}**${modeText}`
+        );
+      }
+
+      if (sub === "edit") {
+        const target = interaction.options.getUser("target");
+        const trigger = interaction.options.getUser("trigger");
+        const currentMode = interaction.options.getString("modo-atual");
+        const newMode = interaction.options.getString("modo");
+        const cooldownSeconds = interaction.options.getInteger("cooldown");
+
+        // Identifica a proteção
+        let protectionToEdit = null;
+        
+        if (currentMode) {
+          // Modo atual fornecido - busca proteção específica
+          const protections = getProtectionsByTargetAndTrigger(
+            interaction.guild.id,
+            target.id,
+            trigger.id
+          );
+          protectionToEdit = protections.find(p => p.mode === currentMode);
+          
+          if (!protectionToEdit) {
+            return interaction.editReply(
+              `⚠️ Proteção não encontrada: **${target.username}** protegido de **${trigger.username}** no modo **${currentMode === "persistent" ? "Persistent" : "Instant"}**.`
+            );
+          }
+        } else {
+          // Modo atual não fornecido - verifica se há apenas uma proteção
+          const protections = getProtectionsByTargetAndTrigger(
+            interaction.guild.id,
+            target.id,
+            trigger.id
+          );
+          
+          if (protections.length === 0) {
+            return interaction.editReply(
+              `⚠️ Nenhuma proteção encontrada: **${target.username}** protegido de **${trigger.username}**.`
+            );
+          }
+          
+          if (protections.length > 1) {
+            return interaction.editReply(
+              `⚠️ Existem múltiplas proteções para **${target.username}** e **${trigger.username}** (Instant e Persistent).\n` +
+              `Por favor, especifique o modo atual usando a opção \`modo-atual\`.`
+            );
+          }
+          
+          protectionToEdit = protections[0];
+        }
+
+        // Validação: se modo novo for persistent, não pode ter cooldown
+        if (newMode === "persistent" && cooldownSeconds !== null) {
           return interaction.editReply(
-            "⚠️ Essa proteção não existe."
+            "⚠️ O modo Persistent não usa cooldown. O trigger será bloqueado enquanto o target estiver na call."
           );
         }
 
+        // Prepara valores para atualização
+        const finalNewMode = newMode !== null ? newMode : protectionToEdit.mode;
+        const finalNewTimeWindow = cooldownSeconds !== null ? cooldownSeconds : null;
+
+        // Atualiza a proteção
+        const result = updateProtection(
+          interaction.guild.id,
+          target.id,
+          trigger.id,
+          protectionToEdit.mode,
+          finalNewMode,
+          finalNewTimeWindow
+        );
+
+        if (!result) {
+          return interaction.editReply(
+            `⚠️ Erro ao atualizar proteção: **${target.username}** protegido de **${trigger.username}**.`
+          );
+        }
+
+        if (!result.success) {
+          return interaction.editReply(
+            `⚠️ ${result.error || "Erro ao atualizar proteção."}`
+          );
+        }
+
+        // Monta mensagem de sucesso
+        const oldModeText = result.oldValues.mode === "persistent" ? "Persistent" : "Instant";
+        const newModeText = result.newValues.mode === "persistent" ? "Persistent" : "Instant";
+        const oldCooldownText = result.oldValues.mode === "instant" 
+          ? ` (cooldown: ${result.oldValues.timeWindow}ms)` 
+          : "";
+        const newCooldownText = result.newValues.mode === "instant" 
+          ? ` (cooldown: ${result.newValues.timeWindow}ms)` 
+          : "";
+
+        let changes = [];
+        if (result.oldValues.mode !== result.newValues.mode) {
+          changes.push(`Modo: **${oldModeText}** → **${newModeText}**`);
+        }
+        if (result.oldValues.timeWindow !== result.newValues.timeWindow && result.newValues.mode === "instant") {
+          changes.push(`Cooldown: **${result.oldValues.timeWindow}ms** → **${result.newValues.timeWindow}ms**`);
+        }
+
+        const changesText = changes.length > 0 
+          ? `\n\n**Alterações:**\n${changes.join("\n")}`
+          : "\n\n⚠️ Nenhuma alteração foi feita (valores fornecidos são iguais aos atuais).";
+
         return interaction.editReply(
-          `✅ Proteção removida: **${target.username}** protegido de **${trigger.username}**`
+          `✅ Proteção atualizada: **${target.username}** protegido de **${trigger.username}**\n` +
+          `Modo atual: **${newModeText}**${newCooldownText}${changesText}`
         );
       }
 
@@ -190,18 +403,24 @@ export default {
               const target = await interaction.client.users.fetch(p.targetId);
               const stats = p.stats || {};
               const activationCount = stats.activationCount || 0;
+              const mode = p.mode || "instant";
+              const modeText = mode === "persistent" ? "Persistent" : "Instant";
+              const timeWindowText = mode === "persistent" ? "contínuo" : `${p.timeWindow}ms`;
               const statsText = activationCount > 0 
                 ? ` • ${activationCount} ativação(ões)`
                 : "";
-              return `${i + 1}. **${target.username}** protegido de **${trigger.username}** (${p.timeWindow}ms)${statsText}`;
+              return `${i + 1}. **${target.username}** protegido de **${trigger.username}** [${modeText}] (${timeWindowText})${statsText}`;
             } catch (err) {
               // Fallback se não conseguir buscar o usuário
               const stats = p.stats || {};
               const activationCount = stats.activationCount || 0;
+              const mode = p.mode || "instant";
+              const modeText = mode === "persistent" ? "Persistent" : "Instant";
+              const timeWindowText = mode === "persistent" ? "contínuo" : `${p.timeWindow}ms`;
               const statsText = activationCount > 0 
                 ? ` • ${activationCount} ativação(ões)`
                 : "";
-              return `${i + 1}. <@!${p.targetId}> protegido de <@!${p.triggerId}> (${p.timeWindow}ms)${statsText}`;
+              return `${i + 1}. <@!${p.targetId}> protegido de <@!${p.triggerId}> [${modeText}] (${timeWindowText})${statsText}`;
             }
           })
         );

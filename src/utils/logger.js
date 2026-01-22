@@ -53,8 +53,12 @@ export async function logProtectionActivation(
   count = 1
 ) {
   const countText = count > 1 ? ` (${count}x)` : "";
-  // Mensagem corrigida: mostra a janela de proteção em vez do tempo decorrido
-  const message = `🚫 Trigger **${trigger.tag || trigger.username || trigger.id}** removido${countText} (janela de proteção: ${formatDuration(timeWindow)})`;
+  // Se timeWindow é 0, é modo Persistent
+  const isPersistent = timeWindow === 0;
+  const protectionText = isPersistent 
+    ? "modo Persistent" 
+    : `janela de proteção: ${formatDuration(timeWindow)}`;
+  const message = `🚫 Trigger **${trigger.tag || trigger.username || trigger.id}** removido${countText} (${protectionText})`;
 
   // Log no console
   console.log(message);
@@ -99,8 +103,8 @@ export async function logProtectionActivation(
             inline: true,
           },
           {
-            name: "⏱️ Janela de Proteção",
-            value: formatDuration(timeWindow),
+            name: isPersistent ? "🔄 Modo" : "⏱️ Janela de Proteção",
+            value: isPersistent ? "Persistent (contínuo)" : formatDuration(timeWindow),
             inline: true,
           },
           {

@@ -20,7 +20,7 @@ function migrateConfig(config) {
     needsSave = true;
   }
 
-  // Migra proteções antigas para incluir stats
+  // Migra proteções antigas para incluir stats e mode
   if (config.protections && Array.isArray(config.protections)) {
     config.protections.forEach((protection) => {
       if (!protection.stats) {
@@ -29,6 +29,11 @@ function migrateConfig(config) {
           lastActivatedAt: null,
           totalDisconnects: 0,
         };
+        needsSave = true;
+      }
+      // Adiciona modo padrão se não existir
+      if (!protection.mode) {
+        protection.mode = "instant";
         needsSave = true;
       }
     });
@@ -132,24 +137,28 @@ export function addProtection(
   guildId,
   targetId,
   triggerId,
-  timeWindow = 2000
+  timeWindow = 2000,
+  mode = "instant"
 ) {
   const guild = ensureGuild(guildId);
 
+  // Validação: verifica duplicata considerando target + trigger + mode
   const exists = guild.protections.some(
     (p) =>
       p.targetId === targetId &&
-      p.triggerId === triggerId
+      p.triggerId === triggerId &&
+      p.mode === mode
   );
 
   if (exists) {
-    return false; // já existe
+    return false; // já existe (mesma combinação de target + trigger + mode)
   }
 
   guild.protections.push({
     targetId,
     triggerId,
     timeWindow,
+    mode,
     stats: {
       activationCount: 0,
       lastActivatedAt: null,
@@ -163,25 +172,126 @@ export function addProtection(
 
 /**
  * Remove uma proteção
+ * Se mode for fornecido, remove apenas a proteção do modo especificado
+ * Se mode não for fornecido, remove todas as proteções com target + trigger (compatibilidade)
  */
-export function removeProtection(guildId, targetId, triggerId) {
+export function removeProtection(guildId, targetId, triggerId, mode = null) {
   const guild = ensureGuild(guildId);
 
   const before = guild.protections.length;
 
-  guild.protections = guild.protections.filter(
-    (p) =>
-      !(
-        p.targetId === targetId &&
-        p.triggerId === triggerId
-      )
-  );
+  if (mode !== null) {
+    // Remove apenas a proteção do modo especificado
+    guild.protections = guild.protections.filter(
+      (p) =>
+        !(
+          p.targetId === targetId &&
+          p.triggerId === triggerId &&
+          p.mode === mode
+        )
+    );
+  } else {
+    // Remove todas as proteções com target + trigger (comportamento antigo para compatibilidade)
+    guild.protections = guild.protections.filter(
+      (p) =>
+        !(
+          p.targetId === targetId &&
+          p.triggerId === triggerId
+        )
+    );
+  }
 
   const removed = guild.protections.length < before;
   if (removed) {
     saveConfigs(); // Salva após remover
   }
   return removed;
+}
+
+/**
+ * Atualiza uma proteção existente
+ * Retorna objeto com { success: boolean, oldValues: {...}, newValues: {...} } ou null se não encontrada
+ */
+export function updateProtection(
+  guildId,
+  targetId,
+  triggerId,
+  currentMode,
+  newMode = null,
+  newTimeWindow = null
+) {
+  const guild = ensureGuild(guildId);
+
+  // Encontra a proteção específica
+  const protection = guild.protections.find(
+    (p) =>
+      p.targetId === targetId &&
+      p.triggerId === triggerId &&
+      p.mode === currentMode
+  );
+
+  if (!protection) {
+    return null; // Proteção não encontrada
+  }
+
+  // Guarda valores antigos para retorno
+  const oldValues = {
+    mode: protection.mode,
+    timeWindow: protection.timeWindow,
+  };
+
+  // Atualiza modo se fornecido
+  if (newMode !== null && newMode !== protection.mode) {
+    // Se mudando para persistent, timeWindow deve ser 0
+    if (newMode === "persistent") {
+      protection.timeWindow = 0;
+    } else if (newMode === "instant") {
+      // Se mudando para instant e timeWindow não fornecido, usar padrão ou manter atual se já for instant
+      if (newTimeWindow === null) {
+        protection.timeWindow = protection.mode === "instant" 
+          ? protection.timeWindow 
+          : 2000; // Padrão se mudando de persistent para instant
+      }
+    }
+    protection.mode = newMode;
+  }
+
+  // Atualiza timeWindow se fornecido (apenas para modo instant)
+  if (newTimeWindow !== null) {
+    if (protection.mode === "persistent") {
+      // Não permite cooldown em modo persistent
+      return { 
+        success: false, 
+        error: "Modo Persistent não aceita cooldown" 
+      };
+    }
+    protection.timeWindow = newTimeWindow * 1000; // Converte segundos para ms
+  }
+
+  // Guarda valores novos para retorno
+  const newValues = {
+    mode: protection.mode,
+    timeWindow: protection.timeWindow,
+  };
+
+  // Salva após atualizar
+  saveConfigs();
+
+  return {
+    success: true,
+    oldValues,
+    newValues,
+  };
+}
+
+/**
+ * Retorna proteções com target + trigger específicos (pode retornar múltiplas se houver diferentes modos)
+ */
+export function getProtectionsByTargetAndTrigger(guildId, targetId, triggerId) {
+  const guild = ensureGuild(guildId);
+  return guild.protections.filter(
+    (p) => p.targetId === targetId && p.triggerId === triggerId
+  );
 }
 
 /**

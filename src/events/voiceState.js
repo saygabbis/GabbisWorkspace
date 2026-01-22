@@ -21,12 +21,66 @@ import { logProtectionActivation, logTargetEntered } from "../utils/logger.js";
    * Formato: { key: { count: number, firstDisconnectAt: timestamp, target: User, trigger: User, channel: Channel } }
    */
   const disconnectTracking = new Map();
+
+  /**
+   * Guarda proteções persistentes ativas
+   * Formato: { key: { targetChannelId, protection, targetMember } }
+   * key: guildId:targetId:triggerId
+   */
+  const persistentProtections = new Map();
   
   /**
    * Cria uma chave única
    */
   function makeKey(guildId, targetId, triggerId, channelId) {
     return `${guildId}:${targetId}:${triggerId}:${channelId}`;
+  }
+
+  /**
+   * Cria uma chave única para proteções persistentes (sem channelId)
+   */
+  function makePersistentKey(guildId, targetId, triggerId) {
+    return `${guildId}:${targetId}:${triggerId}`;
+  }
+
+  /**
+   * Verifica e desconecta trigger em proteção persistent se necessário
+   * OTIMIZADO: evento-driven, sem polling - só verifica quando necessário
+   */
+  async function checkPersistentProtection(guild, triggerId, targetChannelId, protection, targetMember) {
+    try {
+      const triggerMember = await guild.members.fetch(triggerId).catch(() => null);
+      
+      if (!triggerMember) {
+        return;
+      }
+      
+      // Se o trigger está no mesmo canal do target, desconecta
+      if (triggerMember.voice.channelId === targetChannelId) {
+        await triggerMember.voice.disconnect().catch(err => {
+          console.error(`Erro ao desconectar trigger ${triggerMember.user.tag}:`, err.message);
+        });
+        
+        // Registra estatísticas
+        recordDisconnect(guild.id, protection.targetId, triggerId);
+        
+        // Busca canal para log
+        const channel = await guild.channels.fetch(targetChannelId).catch(() => ({ id: targetChannelId }));
+        
+        // Loga a ativação (timeWindow = 0 para modo persistent)
+        await logProtectionActivation(
+          guild.client,
+          guild.id,
+          targetMember?.user || { id: protection.targetId },
+          triggerMember.user,
+          channel,
+          0, // Persistent não tem timeWindow
+          1
+        );
+      }
+    } catch (err) {
+      console.error(`Erro ao verificar proteção persistent:`, err.message);
+    }
   }
   
   /**
@@ -213,7 +267,11 @@ import { logProtectionActivation, logTargetEntered } from "../utils/logger.js";
     const movedChannel =
       oldState.channelId !== newState.channelId &&
       newState.channelId !== null;
-  
+
+    const leftChannel = 
+      oldState.channelId !== null &&
+      newState.channelId === null;
+
     // ===============================
     // 1️⃣ TARGET entrou ou trocou de call
     // ===============================
@@ -233,27 +291,43 @@ import { logProtectionActivation, logTargetEntered } from "../utils/logger.js";
         }
         
         for (const p of protections) {
-          const key = makeKey(
-            guildId,
-            p.targetId,
-            p.triggerId,
-            targetChannelId
-          );
+          const mode = p.mode || "instant";
 
-          // Remove intervalo anterior se existir
-          if (activeIntervals.has(key)) {
-            clearInterval(activeIntervals.get(key));
-            activeIntervals.delete(key);
+          if (mode === "persistent") {
+            // Modo Persistent: adiciona ao Map e verifica imediatamente (sem polling)
+            const persistentKey = makePersistentKey(guildId, p.targetId, p.triggerId);
+            persistentProtections.set(persistentKey, {
+              targetChannelId,
+              protection: p,
+              targetMember: member,
+            });
+
+            // Verifica imediatamente se o trigger já está no canal (apenas uma vez, sem loop)
+            await checkPersistentProtection(guild, p.triggerId, targetChannelId, p, member);
+          } else {
+            // Modo Instant: comportamento original com janela de tempo
+            const key = makeKey(
+              guildId,
+              p.targetId,
+              p.triggerId,
+              targetChannelId
+            );
+
+            // Remove intervalo anterior se existir
+            if (activeIntervals.has(key)) {
+              clearInterval(activeIntervals.get(key));
+              activeIntervals.delete(key);
+            }
+
+            armedWindows.set(key, {
+              armedAt: now,
+              timeWindow: p.timeWindow,
+              targetChannelId,
+            });
+            
+            // Inicia verificação contínua do trigger
+            startProtectionInterval(key, guild, p.triggerId, targetChannelId, p.timeWindow, now, p.targetId, member);
           }
-
-          armedWindows.set(key, {
-            armedAt: now,
-            timeWindow: p.timeWindow,
-            targetChannelId,
-          });
-          
-          // Inicia verificação contínua do trigger
-          startProtectionInterval(key, guild, p.triggerId, targetChannelId, p.timeWindow, now, p.targetId, member);
         }
 
         // Loga entrada do target
@@ -264,6 +338,26 @@ import { logProtectionActivation, logTargetEntered } from "../utils/logger.js";
           targetChannel || { id: targetChannelId },
           protections.length
         );
+      }
+
+      return;
+    }
+
+    // ===============================
+    // 1.5️⃣ TARGET saiu da call (limpa proteções persistentes)
+    // ===============================
+    if (leftChannel) {
+      const protections = getProtectionsForTarget(
+        guildId,
+        member.id
+      );
+
+      for (const p of protections) {
+        const mode = p.mode || "instant";
+        if (mode === "persistent") {
+          const persistentKey = makePersistentKey(guildId, p.targetId, p.triggerId);
+          persistentProtections.delete(persistentKey);
+        }
       }
 
       return;
@@ -280,7 +374,42 @@ import { logProtectionActivation, logTargetEntered } from "../utils/logger.js";
       const triggerChannelId = newState.channelId;
       const triggerChannel = await guild.channels.fetch(triggerChannelId).catch(() => null);
       
-      // Procura por janelas armadas onde o trigger está entrando no mesmo canal do target
+      // Primeiro verifica proteções persistentes (evento-driven, sem polling)
+      for (const [persistentKey, data] of persistentProtections.entries()) {
+        const [gId, targetId, triggerId] = persistentKey.split(":");
+        
+        if (
+          gId === guildId &&
+          triggerId === member.id &&
+          data.targetChannelId === triggerChannelId
+        ) {
+          // Trigger tentou entrar no canal onde o target está - desconecta imediatamente
+          await newState.disconnect().catch(err => {
+            console.error(`Erro ao desconectar trigger ${member.user.tag}:`, err.message);
+          });
+          
+          // Busca informações do target
+          const targetMember = data.targetMember || await guild.members.fetch(targetId).catch(() => null);
+          
+          // Registra estatísticas
+          recordDisconnect(guildId, targetId, triggerId);
+          
+          // Loga a ativação (timeWindow = 0 para modo persistent)
+          await logProtectionActivation(
+            guild.client,
+            guildId,
+            targetMember?.user || { id: targetId, tag: targetId, username: targetId },
+            member.user,
+            triggerChannel || { id: triggerChannelId },
+            0, // Persistent não tem timeWindow
+            1
+          );
+          
+          return; // Já processou, não precisa verificar outras proteções
+        }
+      }
+      
+      // Depois verifica proteções Instant (comportamento original)
       for (const [key, data] of armedWindows.entries()) {
         const [gId, targetId, triggerId, channelId] = key.split(":");
 
