@@ -10,15 +10,54 @@ const CONFIG_FILE = path.join(__dirname, "../../data/guildConfigs.json");
 
 const guildConfigs = new Map();
 
+// Migra configurações antigas para o novo formato
+function migrateConfig(config) {
+  let needsSave = false;
+
+  // Garante que tem logChannelId
+  if (config.logChannelId === undefined) {
+    config.logChannelId = null;
+    needsSave = true;
+  }
+
+  // Migra proteções antigas para incluir stats
+  if (config.protections && Array.isArray(config.protections)) {
+    config.protections.forEach((protection) => {
+      if (!protection.stats) {
+        protection.stats = {
+          activationCount: 0,
+          lastActivatedAt: null,
+          totalDisconnects: 0,
+        };
+        needsSave = true;
+      }
+    });
+  }
+
+  return needsSave;
+}
+
 // Carrega configurações do arquivo
 function loadConfigs() {
   try {
     if (fs.existsSync(CONFIG_FILE)) {
       const data = fs.readFileSync(CONFIG_FILE, "utf-8");
       const configs = JSON.parse(data);
+      let needsSave = false;
+
       for (const [guildId, config] of Object.entries(configs)) {
+        const migrated = migrateConfig(config);
+        if (migrated) {
+          needsSave = true;
+        }
         guildConfigs.set(guildId, config);
       }
+
+      if (needsSave) {
+        saveConfigs();
+        console.log(`🔄 Configurações migradas para novo formato`);
+      }
+
       console.log(`✅ Configurações carregadas de ${CONFIG_FILE}`);
     } else {
       // Cria o diretório se não existir
@@ -57,8 +96,15 @@ loadConfigs();
 function ensureGuild(guildId) {
   if (!guildConfigs.has(guildId)) {
     guildConfigs.set(guildId, {
+      logChannelId: null,
       protections: [],
     });
+  } else {
+    // Migra config existente se necessário
+    const config = guildConfigs.get(guildId);
+    if (migrateConfig(config)) {
+      saveConfigs();
+    }
   }
   return guildConfigs.get(guildId);
 }
@@ -104,6 +150,11 @@ export function addProtection(
     targetId,
     triggerId,
     timeWindow,
+    stats: {
+      activationCount: 0,
+      lastActivatedAt: null,
+      totalDisconnects: 0,
+    },
   });
 
   saveConfigs(); // Salva após adicionar
@@ -150,4 +201,35 @@ export function getProtectionsForTarget(guildId, targetId) {
   return guild.protections.filter(
     (p) => p.targetId === targetId
   );
+}
+
+/**
+ * Define o canal de logs para um servidor
+ */
+export function setLogChannel(guildId, channelId) {
+  const guild = ensureGuild(guildId);
+  guild.logChannelId = channelId;
+  saveConfigs();
+  return true;
+}
+
+/**
+ * Remove o canal de logs de um servidor
+ */
+export function removeLogChannel(guildId) {
+  const guild = ensureGuild(guildId);
+  const hadChannel = guild.logChannelId !== null;
+  guild.logChannelId = null;
+  if (hadChannel) {
+    saveConfigs();
+  }
+  return hadChannel;
+}
+
+/**
+ * Obtém o canal de logs configurado para um servidor
+ */
+export function getLogChannel(guildId) {
+  const guild = ensureGuild(guildId);
+  return guild.logChannelId || null;
 }

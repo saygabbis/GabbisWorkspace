@@ -1,5 +1,12 @@
-import { SlashCommandBuilder } from "discord.js";
-import { addProtection, removeProtection, listProtections } from "../state/guildConfigs.js";
+import { SlashCommandBuilder, PermissionFlagsBits } from "discord.js";
+import { 
+  addProtection, 
+  removeProtection, 
+  listProtections,
+  setLogChannel,
+  removeLogChannel
+} from "../state/guildConfigs.js";
+import { getGuildStats, getTopProtections } from "../utils/stats.js";
 
 export default {
   data: new SlashCommandBuilder()
@@ -43,6 +50,32 @@ export default {
       sub
         .setName("list")
         .setDescription("Lista todas as proteções do servidor")
+    )
+    .addSubcommand(sub =>
+      sub
+        .setName("stats")
+        .setDescription("Mostra estatísticas das proteções")
+    )
+    .addSubcommandGroup(group =>
+      group
+        .setName("logs")
+        .setDescription("Gerencia canal de logs")
+        .addSubcommand(sub =>
+          sub
+            .setName("add")
+            .setDescription("Define o canal onde os logs aparecerão")
+            .addChannelOption(opt =>
+              opt
+                .setName("channel")
+                .setDescription("Canal de logs")
+                .setRequired(true)
+            )
+        )
+        .addSubcommand(sub =>
+          sub
+            .setName("remove")
+            .setDescription("Remove o canal de logs configurado")
+        )
     ),
 
   async execute(interaction) {
@@ -51,7 +84,53 @@ export default {
       await interaction.deferReply({ ephemeral: true });
 
       const sub = interaction.options.getSubcommand();
+      const group = interaction.options.getSubcommandGroup();
 
+      // Comandos de logs (apenas admins) - verificar primeiro para evitar conflito com subcomandos
+      if (group === "logs") {
+        // Verifica permissões de administrador
+        if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+          return interaction.editReply(
+            "❌ Você precisa ser administrador para usar este comando."
+          );
+        }
+
+        const logsSub = interaction.options.getSubcommand();
+
+        if (logsSub === "add") {
+          const channel = interaction.options.getChannel("channel");
+
+          if (!channel.isTextBased()) {
+            return interaction.editReply(
+              "❌ O canal deve ser um canal de texto."
+            );
+          }
+
+          setLogChannel(interaction.guild.id, channel.id);
+
+          return interaction.editReply(
+            `✅ Canal de logs definido: ${channel}`
+          );
+        }
+
+        if (logsSub === "remove") {
+          const removed = removeLogChannel(interaction.guild.id);
+
+          if (!removed) {
+            return interaction.editReply(
+              "⚠️ Nenhum canal de logs estava configurado."
+            );
+          }
+
+          return interaction.editReply(
+            "✅ Canal de logs removido."
+          );
+        }
+
+        return interaction.editReply("❓ Subcomando de logs desconhecido.");
+      }
+
+      // Subcomandos principais
       if (sub === "add") {
         const target = interaction.options.getUser("target");
         const trigger = interaction.options.getUser("trigger");
@@ -103,16 +182,26 @@ export default {
           );
         }
 
-        // Busca os usuários para mostrar nomes
+        // Busca os usuários para mostrar nomes e estatísticas
         const list = await Promise.all(
           protections.map(async (p, i) => {
             try {
               const trigger = await interaction.client.users.fetch(p.triggerId);
               const target = await interaction.client.users.fetch(p.targetId);
-              return `${i + 1}. **${target.username}** protegido de **${trigger.username}** (${p.timeWindow}ms)`;
+              const stats = p.stats || {};
+              const activationCount = stats.activationCount || 0;
+              const statsText = activationCount > 0 
+                ? ` • ${activationCount} ativação(ões)`
+                : "";
+              return `${i + 1}. **${target.username}** protegido de **${trigger.username}** (${p.timeWindow}ms)${statsText}`;
             } catch (err) {
               // Fallback se não conseguir buscar o usuário
-              return `${i + 1}. <@!${p.targetId}> protegido de <@!${p.triggerId}> (${p.timeWindow}ms)`;
+              const stats = p.stats || {};
+              const activationCount = stats.activationCount || 0;
+              const statsText = activationCount > 0 
+                ? ` • ${activationCount} ativação(ões)`
+                : "";
+              return `${i + 1}. <@!${p.targetId}> protegido de <@!${p.triggerId}> (${p.timeWindow}ms)${statsText}`;
             }
           })
         );
@@ -120,6 +209,43 @@ export default {
         return interaction.editReply(
           `📋 **Proteções ativas (${protections.length}):**\n${list.join("\n")}`
         );
+      }
+
+      if (sub === "stats") {
+        const guildStats = getGuildStats(interaction.guild.id);
+        const topProtections = getTopProtections(interaction.guild.id, 5);
+
+        let statsText = `📊 **Estatísticas do Servidor**\n\n`;
+        statsText += `**Total de Proteções:** ${guildStats.totalProtections}\n`;
+        statsText += `**Total de Ativações:** ${guildStats.totalActivations}\n`;
+        statsText += `**Total de Desconexões:** ${guildStats.totalDisconnects}\n`;
+
+        if (guildStats.lastActivation) {
+          const lastActivationDate = new Date(guildStats.lastActivation);
+          statsText += `**Última Ativação:** ${lastActivationDate.toLocaleString("pt-BR")}\n`;
+        } else {
+          statsText += `**Última Ativação:** Nunca\n`;
+        }
+
+        if (topProtections.length > 0) {
+          statsText += `\n**🔝 Top 5 Proteções Mais Ativadas:**\n`;
+          
+          const topList = await Promise.all(
+            topProtections.map(async (p, i) => {
+              try {
+                const trigger = await interaction.client.users.fetch(p.triggerId);
+                const target = await interaction.client.users.fetch(p.targetId);
+                return `${i + 1}. **${target.username}** → **${trigger.username}**: ${p.activationCount} ativação(ões)`;
+              } catch (err) {
+                return `${i + 1}. <@!${p.targetId}> → <@!${p.triggerId}>: ${p.activationCount} ativação(ões)`;
+              }
+            })
+          );
+          
+          statsText += topList.join("\n");
+        }
+
+        return interaction.editReply(statsText);
       }
 
       await interaction.editReply("❓ Subcomando desconhecido.");
