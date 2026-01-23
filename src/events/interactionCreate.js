@@ -2,6 +2,11 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 import { MessageFlags } from "discord.js";
+import { isOwner } from "../config/env.js";
+import {
+  isUserBlacklisted,
+  isCommandBlacklisted,
+} from "../state/blacklist.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -29,6 +34,30 @@ export async function onInteractionCreate(interaction) {
   if (!command) return;
 
   try {
+    // Verificação de blacklist
+    // Owners não são afetados pela blacklist
+    if (!isOwner(interaction.user.id) && interaction.guild) {
+      const userId = interaction.user.id;
+      const guildId = interaction.guild.id;
+      const commandName = interaction.commandName;
+
+      // Verifica se usuário está completamente bloqueado
+      if (isUserBlacklisted(guildId, userId)) {
+        return interaction.reply({
+          content: "🚫 Você está bloqueado de usar este bot.",
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+
+      // Verifica se comando específico está bloqueado
+      if (isCommandBlacklisted(guildId, userId, commandName)) {
+        return interaction.reply({
+          content: `🚫 Você está bloqueado de usar o comando \`/${commandName}\`.`,
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+    }
+
     await command.execute(interaction);
   } catch (err) {
     console.error(err);
