@@ -15,6 +15,10 @@ const connections = new Map(); // guildId -> VoiceConnection
 const players = new Map(); // guildId -> AudioPlayer
 const isPlaying = new Map(); // guildId -> boolean
 
+// Rastreia desconexões inesperadas (não iniciadas por nosso código)
+const unexpectedDisconnections = new Map(); // guildId -> { channelId, timestamp, wasPlaying }
+const disconnectCallbacks = new Map(); // guildId -> callback function
+
 /**
  * Conecta o bot a um canal de voz
  * @param {import("discord.js").VoiceChannel} channel - Canal de voz
@@ -48,9 +52,26 @@ export async function connectToChannel(channel) {
   // Conecta o player à conexão
   connection.subscribe(player);
 
-  // Event listeners para limpeza
+  // Event listeners para limpeza e detecção de desconexões inesperadas
   connection.on("stateChange", (oldState, newState) => {
     if (newState.status === "disconnected") {
+      // Verifica se foi desconexão inesperada (não iniciada por nosso código)
+      const wasPlaying = isPlaying.get(guildId) || false;
+      const channelId = connection.joinConfig?.channelId;
+      
+      // Marca como desconexão inesperada se não foi chamada por disconnectFromChannel
+      unexpectedDisconnections.set(guildId, {
+        channelId,
+        timestamp: Date.now(),
+        wasPlaying,
+      });
+      
+      // Chama callback se existir
+      const callback = disconnectCallbacks.get(guildId);
+      if (callback) {
+        callback(guildId, channelId, wasPlaying);
+      }
+      
       cleanup(guildId);
     }
   });
@@ -78,10 +99,46 @@ export async function connectToChannel(channel) {
 export function disconnectFromChannel(guildId) {
   const connection = getVoiceConnection(guildId);
   if (connection) {
+    // Remove marcação de desconexão inesperada (foi intencional)
+    unexpectedDisconnections.delete(guildId);
     cleanup(guildId);
     return true;
   }
   return false;
+}
+
+/**
+ * Registra callback para desconexões inesperadas
+ * @param {string} guildId - ID do servidor
+ * @param {Function} callback - Função chamada quando bot é desconectado inesperadamente
+ */
+export function onUnexpectedDisconnect(guildId, callback) {
+  disconnectCallbacks.set(guildId, callback);
+}
+
+/**
+ * Remove callback de desconexão inesperada
+ * @param {string} guildId - ID do servidor
+ */
+export function removeUnexpectedDisconnectCallback(guildId) {
+  disconnectCallbacks.delete(guildId);
+}
+
+/**
+ * Verifica se houve desconexão inesperada recente
+ * @param {string} guildId - ID do servidor
+ * @returns {Object|null} Informações da desconexão ou null
+ */
+export function getUnexpectedDisconnection(guildId) {
+  return unexpectedDisconnections.get(guildId) || null;
+}
+
+/**
+ * Limpa registro de desconexão inesperada
+ * @param {string} guildId - ID do servidor
+ */
+export function clearUnexpectedDisconnection(guildId) {
+  unexpectedDisconnections.delete(guildId);
 }
 
 /**

@@ -188,3 +188,180 @@ export async function logTargetEntered(
     }
   }
 }
+
+/**
+ * Log de tentativa de bypass (trigger tentou entrar durante cooldown ou após proteção)
+ */
+export async function logBypassAttempt(
+  client,
+  guildId,
+  target,
+  trigger,
+  channel,
+  reason = "Tentativa de bypass"
+) {
+  const message = `⚠️ Tentativa de bypass: **${trigger.tag || trigger.username || trigger.id}** tentou entrar no canal <#${channel.id}> (${reason})`;
+
+  // Log no console
+  console.log(message);
+
+  // Log no canal do Discord (se configurado)
+  const logChannelId = getLogChannel(guildId);
+  if (logChannelId && client) {
+    try {
+      const guild = await client.guilds.fetch(guildId).catch(() => null);
+      if (!guild) return;
+
+      const logChannel = await guild.channels.fetch(logChannelId).catch(() => null);
+      if (!logChannel || !logChannel.isTextBased()) return;
+
+      const embed = {
+        color: 0xffaa00, // Laranja
+        title: "⚠️ Tentativa de Bypass",
+        description: message,
+        fields: [
+          {
+            name: "👤 Target",
+            value: `<@${target.id}> (${target.tag || target.username || target.id})`,
+            inline: true,
+          },
+          {
+            name: "🤖 Trigger",
+            value: `<@${trigger.id}> (${trigger.tag || trigger.username || trigger.id})`,
+            inline: true,
+          },
+          {
+            name: "📢 Canal",
+            value: `<#${channel.id}>`,
+            inline: true,
+          },
+          {
+            name: "🔍 Motivo",
+            value: reason,
+            inline: false,
+          },
+        ],
+        timestamp: new Date().toISOString(),
+        footer: {
+          text: `Servidor: ${guild.name}`,
+        },
+      };
+
+      await logChannel.send({ embeds: [embed] }).catch(() => {
+        // Silenciosamente falha se não conseguir enviar
+      });
+    } catch (err) {
+      // Silenciosamente falha se houver erro
+    }
+  }
+}
+
+/**
+ * Log de interferência externa (bot desconectado por outro bot)
+ */
+export async function logExternalInterference(
+  client,
+  guildId,
+  channelId,
+  reason = "Bot desconectado inesperadamente"
+) {
+  const message = `🚨 Interferência Externa: ${reason} no canal <#${channelId}>`;
+
+  // Log no console
+  console.warn(message);
+
+  // Log no canal do Discord (se configurado)
+  const logChannelId = getLogChannel(guildId);
+  if (logChannelId && client) {
+    try {
+      const guild = await client.guilds.fetch(guildId).catch(() => null);
+      if (!guild) return;
+
+      const logChannel = await guild.channels.fetch(logChannelId).catch(() => null);
+      if (!logChannel || !logChannel.isTextBased()) return;
+
+      const embed = {
+        color: 0xff0000, // Vermelho
+        title: "🚨 Interferência Externa Detectada",
+        description: message,
+        fields: [
+          {
+            name: "📢 Canal",
+            value: `<#${channelId}>`,
+            inline: true,
+          },
+          {
+            name: "🔍 Motivo",
+            value: reason,
+            inline: false,
+          },
+        ],
+        timestamp: new Date().toISOString(),
+        footer: {
+          text: `Servidor: ${guild.name}`,
+        },
+      };
+
+      await logChannel.send({ embeds: [embed] }).catch(() => {
+        // Silenciosamente falha se não conseguir enviar
+      });
+    } catch (err) {
+      // Silenciosamente falha se houver erro
+    }
+  }
+}
+
+/**
+ * Log de recuperação automática (bot reconectou e retomou proteções)
+ */
+export async function logRecovery(
+  client,
+  guildId,
+  channelId,
+  protectionCount
+) {
+  const message = `✅ Recuperação Automática: Bot reconectou e retomou ${protectionCount} proteção(ões) no canal <#${channelId}>`;
+
+  // Log no console
+  console.log(message);
+
+  // Log no canal do Discord (se configurado)
+  const logChannelId = getLogChannel(guildId);
+  if (logChannelId && client) {
+    try {
+      const guild = await client.guilds.fetch(guildId).catch(() => null);
+      if (!guild) return;
+
+      const logChannel = await guild.channels.fetch(logChannelId).catch(() => null);
+      if (!logChannel || !logChannel.isTextBased()) return;
+
+      const embed = {
+        color: 0x00ff00, // Verde
+        title: "✅ Recuperação Automática",
+        description: message,
+        fields: [
+          {
+            name: "📢 Canal",
+            value: `<#${channelId}>`,
+            inline: true,
+          },
+          {
+            name: "🛡️ Proteções Retomadas",
+            value: protectionCount.toString(),
+            inline: true,
+          },
+        ],
+        timestamp: new Date().toISOString(),
+        footer: {
+          text: `Servidor: ${guild.name}`,
+        },
+      };
+
+      await logChannel.send({ embeds: [embed] }).catch(() => {
+        // Silenciosamente falha se não conseguir enviar
+      });
+    } catch (err) {
+      // Silenciosamente falha se houver erro
+    }
+  }
+}
