@@ -191,22 +191,33 @@ export async function getAudioDuration(filePath) {
  * @param {string} inputPath - Caminho do arquivo de entrada
  * @param {string} outputPath - Caminho do arquivo de saída
  * @param {number|null} maxDuration - Duração máxima em segundos (null = sem limite)
+ * @param {number|null} startTime - Ponto de início em segundos (null = começa do início)
  * @returns {Promise<number>} Duração final do áudio em segundos
  */
-export async function processAudio(inputPath, outputPath, maxDuration = DEFAULT_MAX_DURATION) {
+export async function processAudio(inputPath, outputPath, maxDuration = DEFAULT_MAX_DURATION, startTime = null) {
   if (!fs.existsSync(inputPath)) {
     throw new Error(`Arquivo não encontrado: ${inputPath}`);
   }
 
   // Obtém duração do arquivo original
-  const duration = await getAudioDuration(inputPath);
+  const originalDuration = await getAudioDuration(inputPath);
   
-  // Se maxDuration for null, não limita (apenas para owner)
-  const effectiveMaxDuration = maxDuration === null ? duration : maxDuration;
-  const finalDuration = Math.min(duration, effectiveMaxDuration);
+  // Calcula duração efetiva considerando startTime
+  let effectiveStartTime = startTime || 0;
+  let availableDuration = originalDuration - effectiveStartTime;
+  
+  // Se maxDuration for null, usa toda a duração disponível
+  const effectiveMaxDuration = maxDuration === null ? availableDuration : maxDuration;
+  const finalDuration = Math.min(availableDuration, effectiveMaxDuration);
+
+  // Valida se startTime não ultrapassa a duração do arquivo
+  if (effectiveStartTime >= originalDuration) {
+    throw new Error(`Ponto de início (${effectiveStartTime.toFixed(2)}s) ultrapassa a duração do áudio (${originalDuration.toFixed(2)}s)`);
+  }
 
   // Comando FFmpeg para processar o áudio
   // -i: arquivo de entrada
+  // -ss: ponto de início (se startTime não for null)
   // -t: limita duração (se maxDuration não for null)
   // -c:a libopus: codec Opus
   // -b:a: bitrate 96kbps
@@ -214,12 +225,14 @@ export async function processAudio(inputPath, outputPath, maxDuration = DEFAULT_
   // -ac 2: estéreo
   // -y: sobrescreve arquivo de saída se existir
   const baseCommand = `"${ffmpegPath}" -i "${inputPath}"`;
-  const durationFlag = maxDuration === null ? "" : `-t ${effectiveMaxDuration}`;
+  const startFlag = startTime !== null ? `-ss ${effectiveStartTime}` : "";
+  const durationFlag = maxDuration !== null ? `-t ${effectiveMaxDuration}` : "";
   const codecFlags = `-c:a libopus -b:a ${AUDIO_BITRATE} -ar ${SAMPLE_RATE} -ac 2 -y "${outputPath}"`;
   
-  // Monta o comando com ou sem limitação de duração
-  const ffmpegCommand = durationFlag 
-    ? `${baseCommand} ${durationFlag} ${codecFlags}`
+  // Monta o comando com flags opcionais
+  const flags = [startFlag, durationFlag].filter(f => f !== "").join(" ");
+  const ffmpegCommand = flags 
+    ? `${baseCommand} ${flags} ${codecFlags}`
     : `${baseCommand} ${codecFlags}`;
 
   try {
@@ -240,9 +253,10 @@ export async function processAudio(inputPath, outputPath, maxDuration = DEFAULT_
  * @param {string} inputPath - Caminho do arquivo de entrada (temporário)
  * @param {string} soundId - ID único do som
  * @param {number|null} maxDuration - Duração máxima em segundos (null = sem limite)
+ * @param {number|null} startTime - Ponto de início em segundos (null = começa do início)
  * @returns {Promise<{outputPath: string, duration: number}>}
  */
-export async function processAndSaveSound(guildId, inputPath, soundId, maxDuration = DEFAULT_MAX_DURATION) {
+export async function processAndSaveSound(guildId, inputPath, soundId, maxDuration = DEFAULT_MAX_DURATION, startTime = null) {
   // Cria diretório de sons do servidor se não existir
   const soundsDir = path.join(__dirname, "../../data/sounds", guildId);
   if (!fs.existsSync(soundsDir)) {
@@ -253,7 +267,7 @@ export async function processAndSaveSound(guildId, inputPath, soundId, maxDurati
   const outputPath = path.join(soundsDir, `${soundId}.opus`);
 
   // Processa o áudio
-  const duration = await processAudio(inputPath, outputPath, maxDuration);
+  const duration = await processAudio(inputPath, outputPath, maxDuration, startTime);
 
   return {
     outputPath,
