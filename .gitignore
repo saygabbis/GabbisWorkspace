@@ -1,4 +1,5 @@
 .env
+.cursor
 node_modules
 data/
 data/sounds/
