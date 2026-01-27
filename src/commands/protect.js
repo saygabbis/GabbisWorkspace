@@ -1,12 +1,10 @@
-import { SlashCommandBuilder, PermissionFlagsBits, MessageFlags } from "discord.js";
+import { SlashCommandBuilder, PermissionFlagsBits, MessageFlags, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from "discord.js";
 import { 
   addProtection, 
   removeProtection, 
   listProtections,
   updateProtection,
-  getProtectionsByTargetAndTrigger,
-  setLogChannel,
-  removeLogChannel
+  getProtectionsByTargetAndTrigger
 } from "../state/guildConfigs.js";
 import { getGuildStats, getTopProtections } from "../utils/stats.js";
 
@@ -125,86 +123,50 @@ export default {
       sub
         .setName("list")
         .setDescription("Lista todas as proteções do servidor")
+        .addUserOption(opt =>
+          opt
+            .setName("target")
+            .setDescription("Filtrar por usuário protegido")
+            .setRequired(false)
+        )
+        .addUserOption(opt =>
+          opt
+            .setName("trigger")
+            .setDescription("Filtrar por usuário que dispara a proteção")
+            .setRequired(false)
+        )
+        .addStringOption(opt =>
+          opt
+            .setName("modo")
+            .setDescription("Filtrar por modo de proteção")
+            .setRequired(false)
+            .addChoices(
+              { name: "Instant", value: "instant" },
+              { name: "Persistent", value: "persistent" }
+            )
+        )
     )
     .addSubcommand(sub =>
       sub
         .setName("stats")
         .setDescription("Mostra estatísticas das proteções")
-    )
-    .addSubcommandGroup(group =>
-      group
-        .setName("logs")
-        .setDescription("Gerencia canal de logs")
-        .addSubcommand(sub =>
-          sub
-            .setName("add")
-            .setDescription("Define o canal onde os logs aparecerão")
-            .addChannelOption(opt =>
-              opt
-                .setName("channel")
-                .setDescription("Canal de logs")
-                .setRequired(true)
-            )
-        )
-        .addSubcommand(sub =>
-          sub
-            .setName("remove")
-            .setDescription("Remove o canal de logs configurado")
-        )
     ),
 
   async execute(interaction) {
     try {
-      // 🔹 avisa o Discord que vai responder
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
       const sub = interaction.options.getSubcommand();
-      const group = interaction.options.getSubcommandGroup();
+
+      // deferReply condicional: "list" faz deferReply próprio (público)
+      if (sub !== "list") {
+        // 🔹 avisa o Discord que vai responder
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      }
 
       // Verifica permissões de administrador para TODOS os comandos de protect
-      // (exceto logs que já tem verificação própria, mas vamos manter consistente)
       if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
         return interaction.editReply(
           "❌ Você precisa ser administrador para usar comandos de proteção."
         );
-      }
-
-      // Comandos de logs (apenas admins) - verificar primeiro para evitar conflito com subcomandos
-      if (group === "logs") {
-
-        const logsSub = interaction.options.getSubcommand();
-
-        if (logsSub === "add") {
-          const channel = interaction.options.getChannel("channel");
-
-          if (!channel.isTextBased()) {
-            return interaction.editReply(
-              "❌ O canal deve ser um canal de texto."
-            );
-          }
-
-          setLogChannel(interaction.guild.id, channel.id);
-
-          return interaction.editReply(
-            `✅ Canal de logs definido: ${channel}`
-          );
-        }
-
-        if (logsSub === "remove") {
-          const removed = removeLogChannel(interaction.guild.id);
-
-          if (!removed) {
-            return interaction.editReply(
-              "⚠️ Nenhum canal de logs estava configurado."
-            );
-          }
-
-          return interaction.editReply(
-            "✅ Canal de logs removido."
-          );
-        }
-
-        return interaction.editReply("❓ Subcomando de logs desconhecido.");
       }
 
       // Subcomandos principais
@@ -389,47 +351,155 @@ export default {
       }
 
       if (sub === "list") {
-        const protections = listProtections(interaction.guild.id);
-
-        if (protections.length === 0) {
-          return interaction.editReply(
-            "📋 Nenhuma proteção configurada neste servidor."
-          );
+        // Lista deve ser pública para permitir interação
+        if (!interaction.deferred && !interaction.replied) {
+          await interaction.deferReply();
         }
 
-        // Busca os usuários para mostrar nomes e estatísticas
-        const list = await Promise.all(
-          protections.map(async (p, i) => {
-            try {
-              const trigger = await interaction.client.users.fetch(p.triggerId);
-              const target = await interaction.client.users.fetch(p.targetId);
-              const stats = p.stats || {};
-              const activationCount = stats.activationCount || 0;
-              const mode = p.mode || "instant";
-              const modeText = mode === "persistent" ? "Persistent" : "Instant";
-              const timeWindowText = mode === "persistent" ? "contínuo" : `${p.timeWindow}ms`;
-              const statsText = activationCount > 0 
-                ? ` • ${activationCount} ativação(ões)`
-                : "";
-              return `${i + 1}. **${target.username}** protegido de **${trigger.username}** [${modeText}] (${timeWindowText})${statsText}`;
-            } catch (err) {
-              // Fallback se não conseguir buscar o usuário
-              const stats = p.stats || {};
-              const activationCount = stats.activationCount || 0;
-              const mode = p.mode || "instant";
-              const modeText = mode === "persistent" ? "Persistent" : "Instant";
-              const timeWindowText = mode === "persistent" ? "contínuo" : `${p.timeWindow}ms`;
-              const statsText = activationCount > 0 
-                ? ` • ${activationCount} ativação(ões)`
-                : "";
-              return `${i + 1}. <@!${p.targetId}> protegido de <@!${p.triggerId}> [${modeText}] (${timeWindowText})${statsText}`;
-            }
-          })
-        );
+        let protections = listProtections(interaction.guild.id);
+        
+        // Aplica filtros se fornecidos
+        const targetFilter = interaction.options.getUser("target");
+        const triggerFilter = interaction.options.getUser("trigger");
+        const modeFilter = interaction.options.getString("modo");
+        
+        if (targetFilter) {
+          protections = protections.filter(p => p.targetId === targetFilter.id);
+        }
+        if (triggerFilter) {
+          protections = protections.filter(p => p.triggerId === triggerFilter.id);
+        }
+        if (modeFilter) {
+          protections = protections.filter(p => (p.mode || "instant") === modeFilter);
+        }
+        
+        const count = protections.length;
 
-        return interaction.editReply(
-          `📋 **Proteções ativas (${protections.length}):**\n${list.join("\n")}`
-        );
+        if (count === 0) {
+          const embed = new EmbedBuilder()
+            .setTitle("📋 Proteções do Servidor")
+            .setDescription("📭 Nenhuma proteção configurada neste servidor ainda.")
+            .setColor(0x5865F2)
+            .setTimestamp();
+          return interaction.editReply({ embeds: [embed] });
+        }
+
+        const ITEMS_PER_PAGE = 10;
+        const totalPages = Math.ceil(count / ITEMS_PER_PAGE);
+        let currentPage = 0;
+
+        // Função para criar embed da página atual
+        const createListEmbed = async (page) => {
+          const startIndex = page * ITEMS_PER_PAGE;
+          const endIndex = Math.min(startIndex + ITEMS_PER_PAGE, count);
+          const pageProtections = protections.slice(startIndex, endIndex);
+
+          const protectionList = await Promise.all(
+            pageProtections.map(async (p, index) => {
+              const globalIndex = startIndex + index;
+              try {
+                const trigger = await interaction.client.users.fetch(p.triggerId);
+                const target = await interaction.client.users.fetch(p.targetId);
+                const stats = p.stats || {};
+                const activationCount = stats.activationCount || 0;
+                const mode = p.mode || "instant";
+                const modeText = mode === "persistent" ? "Persistent" : "Instant";
+                const timeWindowText = mode === "persistent" ? "contínuo" : `${p.timeWindow}ms`;
+                const statsText = activationCount > 0 
+                  ? ` • ${activationCount} ativação(ões)`
+                  : "";
+                return `${globalIndex + 1}. **${target.username}** protegido de **${trigger.username}** [${modeText}] (${timeWindowText})${statsText}`;
+              } catch (err) {
+                // Fallback se não conseguir buscar o usuário
+                const stats = p.stats || {};
+                const activationCount = stats.activationCount || 0;
+                const mode = p.mode || "instant";
+                const modeText = mode === "persistent" ? "Persistent" : "Instant";
+                const timeWindowText = mode === "persistent" ? "contínuo" : `${p.timeWindow}ms`;
+                const statsText = activationCount > 0 
+                  ? ` • ${activationCount} ativação(ões)`
+                  : "";
+                return `${globalIndex + 1}. <@!${p.targetId}> protegido de <@!${p.triggerId}> [${modeText}] (${timeWindowText})${statsText}`;
+              }
+            })
+          );
+
+          const embed = new EmbedBuilder()
+            .setTitle("📋 Proteções do Servidor")
+            .setDescription(protectionList.join("\n") || "Nenhuma proteção")
+            .setColor(0x5865F2)
+            .setFooter({
+              text: `Página ${page + 1} de ${totalPages} • Total: ${count} proteção(ões)`,
+            })
+            .setTimestamp();
+
+          return embed;
+        };
+
+        // Cria botões para navegação
+        const createPageComponents = (page) => {
+          const rows = [];
+
+          // Row de navegação
+          if (totalPages > 1) {
+            const navRow = new ActionRowBuilder().addComponents(
+              new ButtonBuilder()
+                .setCustomId("protect_list_prev")
+                .setStyle(ButtonStyle.Primary)
+                .setEmoji("⬅️")
+                .setDisabled(page === 0),
+              new ButtonBuilder()
+                .setCustomId("protect_list_next")
+                .setStyle(ButtonStyle.Primary)
+                .setEmoji("➡️")
+                .setDisabled(page === totalPages - 1)
+            );
+            rows.push(navRow);
+          }
+
+          return rows;
+        };
+
+        // Envia embed inicial com botões
+        const embed = await createListEmbed(currentPage);
+        const components = createPageComponents(currentPage);
+        const message = await interaction.editReply({ embeds: [embed], components });
+
+        // Cria collector para botões
+        const filter = (i) =>
+          i.user.id === interaction.user.id && i.message.id === message.id;
+
+        const collector = message.createMessageComponentCollector({
+          filter,
+          time: 60000, // 1 minuto
+        });
+
+        collector.on("collect", async (interactionComponent) => {
+          const customId = interactionComponent.customId;
+
+          if (customId === "protect_list_prev" || customId === "protect_list_next") {
+            if (customId === "protect_list_prev" && currentPage > 0) {
+              currentPage--;
+            } else if (customId === "protect_list_next" && currentPage < totalPages - 1) {
+              currentPage++;
+            }
+
+            const newEmbed = await createListEmbed(currentPage);
+            const newComponents = createPageComponents(currentPage);
+            await interactionComponent.update({
+              embeds: [newEmbed],
+              components: newComponents,
+            });
+          }
+        });
+
+        collector.on("end", async () => {
+          try {
+            await message.edit({ components: [] });
+          } catch {
+            // ignora
+          }
+        });
       }
 
       if (sub === "stats") {

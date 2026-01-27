@@ -1,6 +1,6 @@
 // src/utils/logger.js
 
-import { getLogChannel, getCommandLogs } from "../state/guildConfigs.js";
+import { getCommandLogs } from "../state/guildConfigs.js";
 import { EmbedBuilder } from "discord.js";
 
 /**
@@ -83,8 +83,8 @@ export async function logCommand(client, guildId, commandName, user, options = n
   // Log no console
   console.log(`[${timestamp}] 📝 COMMAND: /${commandName} | User: ${user.tag} (${user.id}) | Guild: ${guildId}${optionsStr}${resultStr}`);
 
-  // Verifica se deve logar no Discord
-  const commandLogs = getCommandLogs(guildId);
+  // Verifica se deve logar no Discord (apenas tipo 'commands' ou 'all')
+  const commandLogs = getCommandLogs(guildId, 'commands') || getCommandLogs(guildId, 'all');
   if (!commandLogs || !client) return;
 
   // Verifica se deve logar este comando específico
@@ -177,9 +177,10 @@ export async function logProtectionActivation(
   // Log no console
   console.log(message);
 
-  // Log no canal do Discord (se configurado)
-  const logChannelId = getLogChannel(guildId);
-  if (logChannelId && client) {
+  // Log no canal do Discord (se configurado - tipo 'protection' ou 'all')
+  const protectionLogs = getCommandLogs(guildId, 'protection') || getCommandLogs(guildId, 'all');
+  if (protectionLogs && protectionLogs.channelId && client) {
+    const logChannelId = protectionLogs.channelId;
     try {
       const guild = await client.guilds.fetch(guildId).catch(() => null);
       if (!guild) return;
@@ -257,9 +258,10 @@ export async function logTargetEntered(
   // Log no console
   console.log(message);
 
-  // Log no canal do Discord (se configurado)
-  const logChannelId = getLogChannel(guildId);
-  if (logChannelId && client) {
+  // Log no canal do Discord (se configurado - tipo 'protection' ou 'all')
+  const protectionLogs = getCommandLogs(guildId, 'protection') || getCommandLogs(guildId, 'all');
+  if (protectionLogs && protectionLogs.channelId && client) {
+    const logChannelId = protectionLogs.channelId;
     try {
       const guild = await client.guilds.fetch(guildId).catch(() => null);
       if (!guild) return;
@@ -319,9 +321,10 @@ export async function logBypassAttempt(
   // Log no console
   console.log(message);
 
-  // Log no canal do Discord (se configurado)
-  const logChannelId = getLogChannel(guildId);
-  if (logChannelId && client) {
+  // Log no canal do Discord (se configurado - tipo 'protection' ou 'all')
+  const protectionLogs = getCommandLogs(guildId, 'protection') || getCommandLogs(guildId, 'all');
+  if (protectionLogs && protectionLogs.channelId && client) {
+    const logChannelId = protectionLogs.channelId;
     try {
       const guild = await client.guilds.fetch(guildId).catch(() => null);
       if (!guild) return;
@@ -384,9 +387,10 @@ export async function logExternalInterference(
   // Log no console
   console.warn(message);
 
-  // Log no canal do Discord (se configurado)
-  const logChannelId = getLogChannel(guildId);
-  if (logChannelId && client) {
+  // Log no canal do Discord (se configurado - tipo 'protection' ou 'all')
+  const protectionLogs = getCommandLogs(guildId, 'protection') || getCommandLogs(guildId, 'all');
+  if (protectionLogs && protectionLogs.channelId && client) {
+    const logChannelId = protectionLogs.channelId;
     try {
       const guild = await client.guilds.fetch(guildId).catch(() => null);
       if (!guild) return;
@@ -439,9 +443,10 @@ export async function logRecovery(
   // Log no console
   console.log(message);
 
-  // Log no canal do Discord (se configurado)
-  const logChannelId = getLogChannel(guildId);
-  if (logChannelId && client) {
+  // Log no canal do Discord (se configurado - tipo 'protection' ou 'all')
+  const protectionLogs = getCommandLogs(guildId, 'protection') || getCommandLogs(guildId, 'all');
+  if (protectionLogs && protectionLogs.channelId && client) {
+    const logChannelId = protectionLogs.channelId;
     try {
       const guild = await client.guilds.fetch(guildId).catch(() => null);
       if (!guild) return;

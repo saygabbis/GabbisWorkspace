@@ -106,6 +106,53 @@ export async function onInteractionCreate(interaction) {
       }
     }
 
+    // Autocomplete para /blacklist remove (comandos bloqueados)
+    if (interaction.commandName === "blacklist" && interaction.guild) {
+      const sub = interaction.options.getSubcommand(false);
+      if (sub === "remove") {
+        try {
+          const { listBlacklist } = await import("../state/blacklist.js");
+          const guildId = interaction.guild.id;
+          const focused = interaction.options.getFocused() || "";
+          const normalized = focused.toLowerCase();
+          const user = interaction.options.getUser("user");
+
+          const blacklist = listBlacklist(guildId);
+          const allBlockedCommands = new Set();
+
+          // Se usuário foi especificado, mostra apenas comandos bloqueados desse usuário
+          if (user) {
+            const userCommands = blacklist.commands[user.id] || [];
+            userCommands.forEach(cmd => allBlockedCommands.add(cmd));
+          } else {
+            // Se usuário não foi especificado, mostra todos os comandos bloqueados
+            Object.values(blacklist.commands).forEach(commands => {
+              commands.forEach(cmd => allBlockedCommands.add(cmd));
+            });
+          }
+
+          const filtered = Array.from(allBlockedCommands)
+            .filter(cmd => cmd.toLowerCase().includes(normalized))
+            .slice(0, 25);
+
+          const choices = filtered.map((cmd) => ({
+            name: `/${cmd}`,
+            value: cmd,
+          }));
+
+          await interaction.respond(choices);
+        } catch (err) {
+          console.error("Erro no autocomplete de /blacklist:", err);
+          try {
+            await interaction.respond([]);
+          } catch {
+            // ignora
+          }
+        }
+        return;
+      }
+    }
+
     // Outros autocompletes
     try {
       await interaction.respond([]);

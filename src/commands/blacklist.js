@@ -1,4 +1,4 @@
-import { SlashCommandBuilder, PermissionFlagsBits, MessageFlags } from "discord.js";
+import { SlashCommandBuilder, PermissionFlagsBits, MessageFlags, EmbedBuilder } from "discord.js";
 import {
   addUserBlacklist,
   removeUserBlacklist,
@@ -79,19 +79,41 @@ export default {
             .setName("commands")
             .setDescription("Comandos a desbloquear (separados por vírgula)")
             .setRequired(false)
+            .setAutocomplete(true)
         )
     )
     .addSubcommand(sub =>
       sub
         .setName("list")
         .setDescription("Lista todos os usuários e comandos bloqueados")
+    )
+    .addSubcommand(sub =>
+      sub
+        .setName("check")
+        .setDescription("Verifica se um usuário ou comando está bloqueado")
+        .addUserOption(opt =>
+          opt
+            .setName("user")
+            .setDescription("Usuário a verificar")
+            .setRequired(false)
+        )
+        .addStringOption(opt =>
+          opt
+            .setName("command")
+            .setDescription("Comando a verificar")
+            .setRequired(false)
+            .setAutocomplete(true)
+        )
     ),
 
   async execute(interaction) {
     try {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
       const sub = interaction.options.getSubcommand();
+
+      // deferReply condicional: "list" e "check" fazem deferReply próprio
+      if (sub !== "list" && sub !== "check") {
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      }
 
       // Verifica permissões de administrador
       if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
@@ -134,8 +156,6 @@ export default {
             );
           }
         }
-
-        let results = [];
 
         // Adiciona usuário à blacklist completa
         if (user && !commandsStr) {
@@ -227,8 +247,6 @@ export default {
           );
         }
 
-        let results = [];
-
         // Remove usuário da blacklist completa
         if (user && !commandsStr) {
           const success = removeUserBlacklist(interaction.guild.id, user.id);
@@ -289,20 +307,29 @@ export default {
       }
 
       if (sub === "list") {
+        // Lista deve ser pública para permitir visualização
+        if (!interaction.deferred && !interaction.replied) {
+          await interaction.deferReply();
+        }
+
         const blacklist = listBlacklist(interaction.guild.id);
 
         if (blacklist.users.length === 0 && Object.keys(blacklist.commands).length === 0) {
-          return interaction.editReply(
-            "📋 Nenhuma entrada na blacklist deste servidor."
-          );
+          const embed = new EmbedBuilder()
+            .setTitle("📋 Blacklist do Servidor")
+            .setDescription("📭 Nenhuma entrada na blacklist deste servidor ainda.")
+            .setColor(0x5865F2)
+            .setTimestamp();
+          return interaction.editReply({ embeds: [embed] });
         }
 
-        let listText = "📋 **Blacklist do Servidor:**\n\n";
+        const embed = new EmbedBuilder()
+          .setTitle("📋 Blacklist do Servidor")
+          .setColor(0x5865F2)
+          .setTimestamp();
 
         // Lista usuários completamente bloqueados
         if (blacklist.users.length > 0) {
-          listText += "**🚫 Usuários Completamente Bloqueados:**\n";
-          
           const userList = await Promise.all(
             blacklist.users.map(async (userId, i) => {
               try {
@@ -314,28 +341,90 @@ export default {
             })
           );
           
-          listText += userList.join("\n") + "\n\n";
+          embed.addFields({
+            name: `🚫 Usuários Completamente Bloqueados (${blacklist.users.length})`,
+            value: userList.join("\n") || "Nenhum",
+            inline: false,
+          });
         }
 
         // Lista comandos bloqueados por usuário
         if (Object.keys(blacklist.commands).length > 0) {
-          listText += "**🔒 Comandos Bloqueados por Usuário:**\n";
-          
           const commandList = await Promise.all(
             Object.entries(blacklist.commands).map(async ([userId, commands], i) => {
               try {
                 const user = await interaction.client.users.fetch(userId);
-                return `${i + 1}. **${user.username}**: ${commands.join(", ")}`;
+                return `${i + 1}. **${user.username}**: ${commands.map(c => `\`/${c}\``).join(", ")}`;
               } catch (err) {
-                return `${i + 1}. <@!${userId}>: ${commands.join(", ")}`;
+                return `${i + 1}. <@!${userId}>: ${commands.map(c => `\`/${c}\``).join(", ")}`;
               }
             })
           );
           
-          listText += commandList.join("\n");
+          embed.addFields({
+            name: `🔒 Comandos Bloqueados por Usuário (${Object.keys(blacklist.commands).length})`,
+            value: commandList.join("\n") || "Nenhum",
+            inline: false,
+          });
         }
 
-        return interaction.editReply(listText);
+        return interaction.editReply({ embeds: [embed] });
+      }
+
+      if (sub === "check") {
+        if (!interaction.deferred && !interaction.replied) {
+          await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+        }
+
+        const user = interaction.options.getUser("user");
+        const commandName = interaction.options.getString("command");
+
+        if (!user && !commandName) {
+          return interaction.editReply(
+            "⚠️ Você deve fornecer pelo menos uma opção: `user` ou `command`."
+          );
+        }
+
+        const blacklist = listBlacklist(interaction.guild.id);
+        const results = [];
+
+        if (user) {
+          const isUserBlocked = blacklist.users.includes(user.id);
+          const userCommands = blacklist.commands[user.id] || [];
+          
+          if (isUserBlocked) {
+            results.push(`🚫 **${user.username}** está **completamente bloqueado** da blacklist.`);
+          } else if (userCommands.length > 0) {
+            results.push(`🔒 **${user.username}** tem os seguintes comandos bloqueados: ${userCommands.map(c => `\`/${c}\``).join(", ")}`);
+          } else {
+            results.push(`✅ **${user.username}** não está na blacklist.`);
+          }
+        }
+
+        if (commandName) {
+          // Verifica se o comando está bloqueado para algum usuário
+          const usersWithCommand = Object.entries(blacklist.commands)
+            .filter(([userId, commands]) => commands.includes(commandName))
+            .map(([userId]) => userId);
+
+          if (usersWithCommand.length > 0) {
+            const userList = await Promise.all(
+              usersWithCommand.slice(0, 10).map(async (userId) => {
+                try {
+                  const u = await interaction.client.users.fetch(userId);
+                  return `**${u.username}**`;
+                } catch {
+                  return `<@!${userId}>`;
+                }
+              })
+            );
+            results.push(`🔒 O comando \`/${commandName}\` está bloqueado para ${usersWithCommand.length} usuário(s): ${userList.join(", ")}${usersWithCommand.length > 10 ? ` e mais ${usersWithCommand.length - 10}...` : ""}`);
+          } else {
+            results.push(`✅ O comando \`/${commandName}\` não está bloqueado para nenhum usuário.`);
+          }
+        }
+
+        return interaction.editReply(results.join("\n\n"));
       }
 
       await interaction.editReply("❓ Subcomando desconhecido.");

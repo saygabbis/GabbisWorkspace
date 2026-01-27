@@ -1,4 +1,4 @@
-import { SlashCommandBuilder, MessageFlags } from "discord.js";
+import { SlashCommandBuilder, MessageFlags, EmbedBuilder } from "discord.js";
 import { connectToChannel, playTTS, isPlayingAudio } from "../utils/voiceManager.js";
 import { getUserLanguage, setUserLanguage } from "../state/userConfigs.js";
 import { getNarradorSayUser } from "../state/guildConfigs.js";
@@ -58,6 +58,11 @@ export default {
               { name: "Desativado", value: "off" }
             )
         )
+    )
+    .addSubcommand(sub =>
+      sub
+        .setName("info")
+        .setDescription("Mostra configurações atuais do narrador")
     ),
 
   async execute(interaction) {
@@ -177,6 +182,34 @@ export default {
             `ℹ️ Narrador já estava configurado para ${enabled ? "**falar o nome**" : "**não falar o nome**"} do usuário.`
           );
         }
+      }
+
+      if (subcommand === "info") {
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+        const userId = interaction.user.id;
+        const language = getUserLanguage(userId);
+        const languageName = SUPPORTED_LANGUAGES.find(l => l.value === language)?.name || language;
+        const sayUser = getNarradorSayUser(guildId);
+
+        const embed = new EmbedBuilder()
+          .setTitle("📋 Configurações do Narrador")
+          .setColor(0x5865F2)
+          .setTimestamp()
+          .addFields(
+            {
+              name: "🌐 Seu Idioma",
+              value: `**${languageName}**`,
+              inline: true,
+            },
+            {
+              name: "👤 Falar Nome do Usuário",
+              value: sayUser ? "**Ativado**" : "**Desativado**",
+              inline: true,
+            }
+          );
+
+        return interaction.editReply({ embeds: [embed] });
       }
     } catch (error) {
       console.error("Erro no comando narrador:", error);

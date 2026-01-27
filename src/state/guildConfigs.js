@@ -46,7 +46,44 @@ function migrateConfig(config) {
 
   // Garante que tem commandLogs (padrão null - sem logs específicos)
   if (config.commandLogs === undefined) {
-    config.commandLogs = null; // null = sem logs, ou { channelId: string, commands: [] } = logs por comando, ou { channelId: string, commands: null } = logs gerais
+    config.commandLogs = null; // null = sem logs, ou { channelId: string, type: 'commands'|'protection'|'all', commands?: string[]|null } = logs configurados
+    needsSave = true;
+  }
+
+  // Migra logChannelId antigo para commandLogs com tipo "protection"
+  // Esta migração acontece apenas se logChannelId existe e não foi migrado ainda
+  if (config.logChannelId && config.logChannelId !== null) {
+    if (!config.commandLogs) {
+      // Não tinha commandLogs: cria novo com tipo 'protection' usando logChannelId
+      config.commandLogs = {
+        channelId: config.logChannelId,
+        type: 'protection',
+        commands: null
+      };
+      needsSave = true;
+      console.log(`🔄 Migrado logChannelId (${config.logChannelId}) para commandLogs com tipo 'protection'`);
+    } else if (config.commandLogs.channelId === config.logChannelId) {
+      // Mesmo canal: se tipo é 'commands', muda para 'all' para incluir proteção também
+      if (config.commandLogs.type === 'commands') {
+        config.commandLogs.type = 'all';
+        needsSave = true;
+        console.log(`🔄 Migrado: commandLogs do mesmo canal agora é tipo 'all' (inclui proteção)`);
+      } else if (config.commandLogs.type === 'protection') {
+        // Já está configurado como protection, não precisa fazer nada
+      } else if (config.commandLogs.type === 'all') {
+        // Já está como 'all', não precisa fazer nada
+      }
+    } else {
+      // Canais diferentes: logChannelId antigo será ignorado
+      // O novo sistema usa apenas commandLogs
+      console.log(`ℹ️ logChannelId (${config.logChannelId}) diferente de commandLogs.channelId (${config.commandLogs.channelId}), usando apenas commandLogs`);
+    }
+  }
+
+  // Migra commandLogs antigo (sem type) para incluir type
+  if (config.commandLogs && config.commandLogs.type === undefined) {
+    // Se não tem type, assume que é 'commands' (comportamento antigo)
+    config.commandLogs.type = 'commands';
     needsSave = true;
   }
 
@@ -349,37 +386,6 @@ export function getProtectionsForTarget(guildId, targetId) {
 }
 
 /**
- * Define o canal de logs para um servidor
- */
-export function setLogChannel(guildId, channelId) {
-  const guild = ensureGuild(guildId);
-  guild.logChannelId = channelId;
-  saveConfigs();
-  return true;
-}
-
-/**
- * Remove o canal de logs de um servidor
- */
-export function removeLogChannel(guildId) {
-  const guild = ensureGuild(guildId);
-  const hadChannel = guild.logChannelId !== null;
-  guild.logChannelId = null;
-  if (hadChannel) {
-    saveConfigs();
-  }
-  return hadChannel;
-}
-
-/**
- * Obtém o canal de logs configurado para um servidor
- */
-export function getLogChannel(guildId) {
-  const guild = ensureGuild(guildId);
-  return guild.logChannelId || null;
-}
-
-/**
  * Obtém a duração máxima de áudio configurada para o servidor
  * @param {string} guildId - ID do servidor
  * @returns {number} Duração máxima em segundos (padrão: 15)
@@ -471,11 +477,24 @@ export function setNarradorSayUser(guildId, enabled) {
 /**
  * Obtém configuração de logs de comandos
  * @param {string} guildId - ID do servidor
- * @returns {Object|null} { channelId: string, commands: string[]|null } ou null se não configurado
+ * @param {string} type - Tipo de log a buscar: 'commands', 'protection', ou 'all' (opcional, retorna qualquer tipo se não especificado)
+ * @returns {Object|null} { channelId: string, type: string, commands: string[]|null } ou null se não configurado
  */
-export function getCommandLogs(guildId) {
+export function getCommandLogs(guildId, type = null) {
   const guild = ensureGuild(guildId);
-  return guild.commandLogs || null;
+  const logs = guild.commandLogs;
+  
+  if (!logs) return null;
+  
+  // Se type não foi especificado, retorna qualquer log
+  if (!type) return logs;
+  
+  // Se type foi especificado, verifica se corresponde
+  if (logs.type === type || logs.type === 'all') {
+    return logs;
+  }
+  
+  return null;
 }
 
 /**
@@ -483,20 +502,56 @@ export function getCommandLogs(guildId) {
  * @param {string} guildId - ID do servidor
  * @param {string} channelId - ID do canal de logs
  * @param {string[]|null} commands - Array de nomes de comandos ou null para logs gerais
+ * @param {string} type - Tipo de log: 'commands', 'protection', ou 'all' (padrão: 'commands')
  * @returns {Object} { success: boolean, replaced: boolean, error?: string }
  */
-export function setCommandLogs(guildId, channelId, commands = null) {
+export function setCommandLogs(guildId, channelId, commands = null, type = 'commands') {
   const guild = ensureGuild(guildId);
   
+  // Valida tipo
+  if (!['commands', 'protection', 'all'].includes(type)) {
+    return {
+      success: false,
+      replaced: false,
+      error: "Tipo de log inválido. Use 'commands', 'protection' ou 'all'."
+    };
+  }
+  
   const hadLogs = guild.commandLogs !== null;
+  const existingType = hadLogs ? guild.commandLogs.type : null;
   const wasGeneral = hadLogs && guild.commandLogs.commands === null;
   
   // Se commands é null, é log geral - substitui qualquer log específico
   if (commands === null) {
-    guild.commandLogs = {
-      channelId,
-      commands: null, // Log geral
-    };
+    // Se já tinha logs do mesmo tipo ou tipo 'all', substitui
+    if (hadLogs && (existingType === type || existingType === 'all' || type === 'all')) {
+      // Se tipo é 'all', substitui qualquer configuração anterior
+      if (type === 'all') {
+        guild.commandLogs = {
+          channelId,
+          type: 'all',
+          commands: null, // Log geral
+        };
+      } else if (existingType === 'all') {
+        // Se tinha 'all' e está configurando tipo específico, mantém 'all' mas atualiza canal se diferente
+        if (guild.commandLogs.channelId !== channelId) {
+          guild.commandLogs.channelId = channelId;
+        }
+        // Mantém type: 'all'
+      } else {
+        // Atualiza tipo e canal
+        guild.commandLogs.type = type;
+        guild.commandLogs.channelId = channelId;
+        guild.commandLogs.commands = null;
+      }
+    } else {
+      // Novo log ou tipo diferente
+      guild.commandLogs = {
+        channelId,
+        type: type,
+        commands: null, // Log geral
+      };
+    }
     saveConfigs();
     return {
       success: true,
@@ -504,25 +559,35 @@ export function setCommandLogs(guildId, channelId, commands = null) {
     };
   }
   
-  // Se commands é array, é log por comando específico
+  // Se commands é array, é log por comando específico (apenas para tipo 'commands')
+  if (type !== 'commands') {
+    return {
+      success: false,
+      replaced: false,
+      error: "Logs por comando específico só são suportados para tipo 'commands'."
+    };
+  }
+  
   const commandsArray = Array.isArray(commands) ? commands : [commands];
   
   // Se já tinha log geral, substitui pelo específico
   // Se já tinha log específico, adiciona os novos comandos (sem duplicatas)
-  if (wasGeneral) {
+  if (wasGeneral && existingType === 'commands') {
     // Substitui geral por específico
     guild.commandLogs = {
       channelId,
+      type: 'commands',
       commands: [...new Set(commandsArray)], // Remove duplicatas
     };
-  } else if (hadLogs && guild.commandLogs.channelId === channelId) {
-    // Mesmo canal: adiciona comandos à lista existente (sem duplicatas)
+  } else if (hadLogs && guild.commandLogs.channelId === channelId && existingType === 'commands') {
+    // Mesmo canal e tipo: adiciona comandos à lista existente (sem duplicatas)
     const existingCommands = guild.commandLogs.commands || [];
     guild.commandLogs.commands = [...new Set([...existingCommands, ...commandsArray])];
   } else {
     // Novo canal ou não tinha logs: cria nova configuração
     guild.commandLogs = {
       channelId,
+      type: 'commands',
       commands: [...new Set(commandsArray)],
     };
   }
@@ -531,7 +596,7 @@ export function setCommandLogs(guildId, channelId, commands = null) {
   
   return {
     success: true,
-    replaced: wasGeneral, // Só substituiu se tinha log geral antes
+    replaced: wasGeneral && existingType === 'commands', // Só substituiu se tinha log geral antes
   };
 }
 
@@ -539,18 +604,38 @@ export function setCommandLogs(guildId, channelId, commands = null) {
  * Remove logs de comandos (geral ou de um comando específico)
  * @param {string} guildId - ID do servidor
  * @param {string|null} commandName - Nome do comando para remover log específico, ou null para remover log geral
+ * @param {string} type - Tipo de log a remover: 'commands', 'protection', ou 'all' (opcional, remove qualquer tipo se não especificado)
  * @returns {boolean} true se removeu algo
  */
-export function removeCommandLogs(guildId, commandName = null) {
+export function removeCommandLogs(guildId, commandName = null, type = null) {
   const guild = ensureGuild(guildId);
   
   if (!guild.commandLogs) {
     return false; // Não tinha logs configurados
   }
   
+  const logsType = guild.commandLogs.type;
+  
+  // Se type foi especificado, verifica se corresponde
+  if (type && logsType !== type && logsType !== 'all') {
+    return false; // Tipo não corresponde
+  }
+  
+  // Se type é 'all' e logsType é específico, não remove (só remove se logsType também for 'all')
+  if (type === 'all' && logsType !== 'all') {
+    return false;
+  }
+  
   if (commandName === null) {
-    // Remove log geral
+    // Remove log geral do tipo especificado
     if (guild.commandLogs.commands === null) {
+      // Se type foi especificado e logsType é 'all', não remove tudo, apenas o tipo específico
+      // Por enquanto, se type é especificado e logsType é 'all', não fazemos nada
+      // (seria necessário manter 'all' mas remover um tipo específico, o que não faz sentido)
+      if (type && logsType === 'all') {
+        return false; // Não pode remover tipo específico de 'all'
+      }
+      
       guild.commandLogs = null;
       saveConfigs();
       return true;
@@ -558,7 +643,11 @@ export function removeCommandLogs(guildId, commandName = null) {
     return false; // Não tinha log geral
   }
   
-  // Remove log de comando específico
+  // Remove log de comando específico (apenas para tipo 'commands')
+  if (logsType !== 'commands' && logsType !== 'all') {
+    return false; // Só pode remover comando específico se tipo for 'commands'
+  }
+  
   if (guild.commandLogs.commands === null) {
     return false; // É log geral, não tem comando específico para remover
   }

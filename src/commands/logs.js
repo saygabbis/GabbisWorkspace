@@ -22,8 +22,19 @@ export default {
         )
         .addStringOption((opt) =>
           opt
+            .setName("type")
+            .setDescription("Tipo de log a configurar")
+            .setRequired(false)
+            .addChoices(
+              { name: "Comandos", value: "commands" },
+              { name: "Proteção", value: "protection" },
+              { name: "Todos (Comandos + Proteção)", value: "all" }
+            )
+        )
+        .addStringOption((opt) =>
+          opt
             .setName("command")
-            .setDescription("Comando específico para logar (deixe vazio para logar tudo)")
+            .setDescription("Comando específico para logar (apenas para tipo Comandos, deixe vazio para logar tudo)")
             .setRequired(false)
             .setAutocomplete(true)
         )
@@ -34,8 +45,19 @@ export default {
         .setDescription("Remove logs de comandos")
         .addStringOption((opt) =>
           opt
+            .setName("type")
+            .setDescription("Tipo de log a remover")
+            .setRequired(false)
+            .addChoices(
+              { name: "Comandos", value: "commands" },
+              { name: "Proteção", value: "protection" },
+              { name: "Todos", value: "all" }
+            )
+        )
+        .addStringOption((opt) =>
+          opt
             .setName("command")
-            .setDescription("Comando específico para remover (deixe vazio para remover log geral)")
+            .setDescription("Comando específico para remover (apenas para tipo Comandos, deixe vazio para remover log geral)")
             .setRequired(false)
             .setAutocomplete(true)
         )
@@ -67,6 +89,7 @@ export default {
 
       if (subcommand === "add") {
         const channel = interaction.options.getChannel("channel");
+        const logType = interaction.options.getString("type") || "commands";
         const commandName = interaction.options.getString("command");
 
         if (!channel.isTextBased()) {
@@ -84,23 +107,43 @@ export default {
           );
         }
 
+        // Validação: comando específico só é permitido para tipo 'commands'
+        if (commandName && logType !== "commands") {
+          return interaction.editReply(
+            "❌ Logs por comando específico só são suportados para o tipo **Comandos**."
+          );
+        }
+
         let commands = null;
         if (commandName) {
           commands = [commandName];
         }
 
-        const result = setCommandLogs(guildId, channel.id, commands);
+        const result = setCommandLogs(guildId, channel.id, commands, logType);
+
+        if (!result.success) {
+          return interaction.editReply(`❌ ${result.error || "Erro ao configurar logs."}`);
+        }
+
+        const typeNames = {
+          commands: "Comandos",
+          protection: "Proteção",
+          all: "Todos (Comandos + Proteção)"
+        };
+        const typeName = typeNames[logType] || logType;
 
         if (commandName) {
           // Log específico
           if (result.replaced) {
             return interaction.editReply(
               `✅ Log específico configurado para <#${channel.id}>.\n` +
+                `📌 Tipo: **${typeName}**\n` +
                 `📌 Agora logando o comando **/${commandName}** (log geral anterior foi substituído).`
             );
           } else {
             return interaction.editReply(
               `✅ Log específico adicionado para <#${channel.id}>.\n` +
+                `📌 Tipo: **${typeName}**\n` +
                 `📌 Agora logando o comando **/${commandName}**.`
             );
           }
@@ -108,32 +151,58 @@ export default {
           // Log geral
           return interaction.editReply(
             `✅ Canal de logs configurado para <#${channel.id}>.\n` +
-              `📌 Agora logando **todos os comandos** do bot${result.replaced ? " (logs específicos anteriores foram substituídos)" : ""}.`
+              `📌 Tipo: **${typeName}**\n` +
+              `📌 Agora logando ${logType === "commands" ? "**todos os comandos**" : logType === "protection" ? "**eventos de proteção**" : "**todos os eventos (comandos + proteção)**"} do bot${result.replaced ? " (logs anteriores foram substituídos)" : ""}.`
           );
         }
       }
 
       if (subcommand === "remove") {
+        const logType = interaction.options.getString("type");
         const commandName = interaction.options.getString("command");
 
-        const removed = removeCommandLogs(guildId, commandName);
-
-        if (!removed) {
+        // Validação: comando específico só é permitido para tipo 'commands'
+        if (commandName && logType && logType !== "commands") {
           return interaction.editReply(
-            commandName
-              ? `❌ Não há log configurado para o comando **/${commandName}**.`
-              : `❌ Não há log geral configurado.`
+            "❌ Logs por comando específico só são suportados para o tipo **Comandos**."
           );
         }
 
+        const removed = removeCommandLogs(guildId, commandName, logType || null);
+
+        if (!removed) {
+          const typeNames = {
+            commands: "Comandos",
+            protection: "Proteção",
+            all: "Todos"
+          };
+          const typeText = logType ? ` do tipo **${typeNames[logType] || logType}**` : "";
+          
+          return interaction.editReply(
+            commandName
+              ? `❌ Não há log configurado para o comando **/${commandName}**${typeText}.`
+              : `❌ Não há log geral configurado${typeText}.`
+          );
+        }
+
+        const typeNames = {
+          commands: "Comandos",
+          protection: "Proteção",
+          all: "Todos"
+        };
+        const typeText = logType ? ` do tipo **${typeNames[logType] || logType}**` : "";
+
         return interaction.editReply(
           commandName
-            ? `✅ Log removido para o comando **/${commandName}**.`
-            : `✅ Log geral removido com sucesso.`
+            ? `✅ Log removido para o comando **/${commandName}**${typeText}.`
+            : `✅ Log geral removido com sucesso${typeText}.`
         );
       }
 
       if (subcommand === "view") {
+        // View deve ser público para permitir visualização
+        await interaction.deferReply();
+
         const commandLogs = getCommandLogs(guildId);
 
         const embed = new EmbedBuilder()
@@ -148,24 +217,45 @@ export default {
             .fetch(commandLogs.channelId)
             .catch(() => null);
 
+          const typeNames = {
+            commands: "Comandos",
+            protection: "Proteção",
+            all: "Todos (Comandos + Proteção)"
+          };
+          const typeName = typeNames[commandLogs.type] || commandLogs.type || "Desconhecido";
+
           embed.addFields({
             name: "📢 Canal",
             value: channel ? `<#${commandLogs.channelId}>` : `❌ Canal não encontrado (${commandLogs.channelId})`,
-            inline: false,
+            inline: true,
           });
 
-          if (commandLogs.commands === null) {
+          embed.addFields({
+            name: "🔖 Tipo",
+            value: `**${typeName}**`,
+            inline: true,
+          });
+
+          if (commandLogs.type === "commands" || commandLogs.type === "all") {
+            if (commandLogs.commands === null) {
+              embed.addFields({
+                name: "📝 Escopo",
+                value: "**Todos os comandos** (log geral)",
+                inline: false,
+              });
+            } else if (commandLogs.commands.length === 0) {
+              embed.setDescription("⚠️ Configuração inválida: canal configurado mas sem comandos.");
+            } else {
+              embed.addFields({
+                name: "📝 Comandos Logados",
+                value: commandLogs.commands.map((c) => `\`/${c}\``).join(", "),
+                inline: false,
+              });
+            }
+          } else if (commandLogs.type === "protection") {
             embed.addFields({
               name: "📝 Escopo",
-              value: "**Todos os comandos** (log geral)",
-              inline: false,
-            });
-          } else if (commandLogs.commands.length === 0) {
-            embed.setDescription("⚠️ Configuração inválida: canal configurado mas sem comandos.");
-          } else {
-            embed.addFields({
-              name: "📝 Comandos Logados",
-              value: commandLogs.commands.map((c) => `\`/${c}\``).join(", "),
+              value: "**Eventos de proteção** (log geral)",
               inline: false,
             });
           }

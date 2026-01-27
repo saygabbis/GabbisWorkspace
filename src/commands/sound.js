@@ -556,16 +556,8 @@ export default {
           time: 60000, // 1 minuto
         });
 
-        // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/40dfbc1c-b8ba-4ef2-bdf9-ffeda208e6a9',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'sound.js:list_buttons_collector_create',message:'Created button collector for sound list',data:{guildId,userId,count,totalPages},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
-        // #endregion
-
         collector.on("collect", async (interactionComponent) => {
           const customId = interactionComponent.customId;
-
-          // #region agent log
-          fetch('http://127.0.0.1:7242/ingest/40dfbc1c-b8ba-4ef2-bdf9-ffeda208e6a9',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'sound.js:list_buttons_collect',message:'Button click in sound list',data:{guildId,userId:interactionComponent.user.id,customId,currentPage},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
-          // #endregion
 
           if (customId === "sound_list_prev" || customId === "sound_list_next") {
             if (customId === "sound_list_prev" && currentPage > 0) {
@@ -597,10 +589,6 @@ export default {
 
             const sound = sounds[soundIndex];
 
-            // #region agent log
-            fetch('http://127.0.0.1:7242/ingest/40dfbc1c-b8ba-4ef2-bdf9-ffeda208e6a9',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'sound.js:list_buttons_play',message:'Play button mapped to sound',data:{soundIndex,soundId:sound.id,soundName:sound.name},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
-            // #endregion
-
             try {
               // Defer para evitar timeout de interação enquanto conecta/toca
               await interactionComponent.deferReply({ ephemeral: true });
@@ -627,10 +615,6 @@ export default {
 
               const filePath = getSoundFilePath(guildId, sound.id);
               const fileExists = fs.existsSync(filePath);
-
-              // #region agent log
-              fetch('http://127.0.0.1:7242/ingest/40dfbc1c-b8ba-4ef2-bdf9-ffeda208e6a9',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'sound.js:list_buttons_before_play',message:'About to play sound from list (button)',data:{guildId,userId:interactionComponent.user.id,soundId:sound.id,soundName:sound.name,fileExists},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'F'})}).catch(()=>{});
-              // #endregion
 
               if (!fileExists) {
                 await interactionComponent.reply({
