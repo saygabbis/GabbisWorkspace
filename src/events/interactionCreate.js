@@ -28,6 +28,62 @@ for (const file of files) {
 }
 
 export async function onInteractionCreate(interaction) {
+  // Autocomplete de comandos
+  if (interaction.isAutocomplete()) {
+    const command = commands.get(interaction.commandName);
+    if (!command) return;
+
+    // Autocomplete específico para /sound play/remove (nomes de áudios)
+    if (interaction.commandName === "sound" && interaction.guild) {
+      const sub = interaction.options.getSubcommand(false);
+      if (sub === "play" || sub === "remove") {
+        try {
+          const { getSounds } = await import("../state/soundboard.js");
+          const guildId = interaction.guild.id;
+          const focused = interaction.options.getFocused() || "";
+
+          const sounds = getSounds(guildId);
+          const normalized = focused.toLowerCase();
+
+          const filtered = sounds
+            .filter((s) =>
+              s.name.toLowerCase().includes(normalized)
+            )
+            .slice(0, 25);
+
+          const choices = filtered.map((sound, index) => {
+            const globalIndex = sounds.indexOf(sound);
+            const number = globalIndex >= 0 ? globalIndex + 1 : index + 1;
+            const emojiDisplay = sound.emoji ? `${sound.emoji} ` : "";
+            return {
+              name: `${number}. ${emojiDisplay}${sound.name}`,
+              value: sound.name,
+            };
+          });
+
+          await interaction.respond(choices);
+        } catch (err) {
+          console.error("Erro no autocomplete de /sound:", err);
+          try {
+            await interaction.respond([]);
+          } catch {
+            // ignora
+          }
+        }
+      } else {
+        // Subcomando sem autocomplete específico
+        try {
+          await interaction.respond([]);
+        } catch {
+          // ignora
+        }
+      }
+    }
+
+    return;
+  }
+
+  // Comandos de chat (slash)
   if (!interaction.isChatInputCommand()) return;
 
   const command = commands.get(interaction.commandName);

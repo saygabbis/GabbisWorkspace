@@ -32,9 +32,9 @@ function migrateConfig(config) {
     needsSave = true;
   }
 
-  // Garante que tem soundboardVolume (padrão 60%)
+  // Garante que tem soundboardVolume (padrão 40%)
   if (config.soundboardVolume === undefined) {
-    config.soundboardVolume = 60;
+    config.soundboardVolume = 40;
     needsSave = true;
   }
 
@@ -123,7 +123,7 @@ function ensureGuild(guildId) {
       protections: [],
       soundboard: [],
       maxSoundDuration: 15, // Padrão: 15 segundos
-      soundboardVolume: 60, // Padrão: 60%
+      soundboardVolume: 40, // Padrão: 40%
     });
   } else {
     // Migra config existente se necessário
@@ -368,26 +368,25 @@ export function getLogChannel(guildId) {
 /**
  * Obtém a duração máxima de áudio configurada para o servidor
  * @param {string} guildId - ID do servidor
- * @returns {number} Duração máxima em segundos (padrão: 15, máximo: 60)
+ * @returns {number} Duração máxima em segundos (padrão: 15)
  */
 export function getMaxSoundDuration(guildId) {
   const guild = ensureGuild(guildId);
   const duration = guild.maxSoundDuration || 15;
-  // Limita a 60 segundos para admins
-  return Math.min(duration, 60);
+  return duration;
 }
 
 /**
  * Define a duração máxima de áudio para o servidor
  * @param {string} guildId - ID do servidor
- * @param {number} duration - Duração máxima em segundos (1-60)
+ * @param {number} duration - Duração máxima em segundos (>=1)
  * @returns {Object} { success: boolean, error?: string }
  */
 export function setMaxSoundDuration(guildId, duration) {
-  if (typeof duration !== "number" || duration < 1 || duration > 60) {
+  if (typeof duration !== "number" || duration < 1) {
     return {
       success: false,
-      error: "Duração deve ser um número entre 1 e 60 segundos.",
+      error: "Duração deve ser um número maior ou igual a 1 segundo.",
     };
   }
 
@@ -401,24 +400,24 @@ export function setMaxSoundDuration(guildId, duration) {
 /**
  * Obtém o volume do soundboard configurado para o servidor
  * @param {string} guildId - ID do servidor
- * @returns {number} Volume em porcentagem (1-100, padrão: 60)
+ * @returns {number} Volume em porcentagem (1-200, padrão: 40)
  */
 export function getSoundboardVolume(guildId) {
   const guild = ensureGuild(guildId);
-  return guild.soundboardVolume || 60;
+  return guild.soundboardVolume || 40;
 }
 
 /**
  * Define o volume do soundboard para o servidor
  * @param {string} guildId - ID do servidor
- * @param {number} volume - Volume em porcentagem (1-100)
+ * @param {number} volume - Volume em porcentagem (1-200)
  * @returns {Object} { success: boolean, error?: string }
  */
 export function setSoundboardVolume(guildId, volume) {
-  if (typeof volume !== "number" || volume < 1 || volume > 100) {
+  if (typeof volume !== "number" || volume < 1 || volume > 200) {
     return {
       success: false,
-      error: "Volume deve ser um número entre 1 e 100.",
+      error: "Volume deve ser um número entre 1 e 200.",
     };
   }
 

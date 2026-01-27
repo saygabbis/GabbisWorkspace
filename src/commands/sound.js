@@ -1,8 +1,10 @@
 import { SlashCommandBuilder, MessageFlags, PermissionFlagsBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from "discord.js";
 import {
   connectToChannel,
-  isConnected,
   playSoundFile,
+  playSoundFileImmediate,
+  isPlayingAudio,
+  stopSound,
 } from "../utils/voiceManager.js";
 import {
   addSound,
@@ -11,7 +13,6 @@ import {
   getSoundByIndex,
   getSounds,
   getSoundCount,
-  updateSoundEmoji,
   clearAllSounds,
 } from "../state/soundboard.js";
 import {
@@ -24,7 +25,6 @@ import {
   getSoundFilePath,
 } from "../utils/soundboardManager.js";
 import { getMaxSoundDuration, setMaxSoundDuration, getSoundboardVolume, setSoundboardVolume } from "../state/guildConfigs.js";
-import { getUserMaxSoundDuration, setUserMaxSoundDuration } from "../state/userConfigs.js";
 import { isOwner } from "../config/env.js";
 import fs from "fs";
 import path from "path";
@@ -56,9 +56,8 @@ export default {
         .addStringOption((opt) =>
           opt
             .setName("emoji")
-            .setDescription("Emoji para o som (opcional)")
-            .setRequired(false)
-            .setMaxLength(10)
+            .setDescription("Emoji para o som")
+            .setRequired(true)
         )
         .addAttachmentOption((opt) =>
           opt
@@ -70,6 +69,13 @@ export default {
             .setName("link")
             .setDescription("URL do arquivo de áudio")
         )
+        .addIntegerOption((opt) =>
+          opt
+            .setName("comprimento")
+            .setDescription("Duração máxima a reproduzir (em ms, opcional)")
+            .setRequired(false)
+            .setMinValue(1)
+        )
     )
     .addSubcommand((sub) =>
       sub
@@ -79,7 +85,15 @@ export default {
           opt
             .setName("nome")
             .setDescription("Nome do som a remover")
-            .setRequired(true)
+            .setRequired(false)
+            .setAutocomplete(true)
+        )
+        .addIntegerOption((opt) =>
+          opt
+            .setName("numero")
+            .setDescription("Número do som na lista (1, 2, 3...)")
+            .setRequired(false)
+            .setMinValue(1)
         )
     )
     .addSubcommand((sub) =>
@@ -91,6 +105,7 @@ export default {
             .setName("nome")
             .setDescription("Nome do som a reproduzir")
             .setRequired(false)
+            .setAutocomplete(true)
         )
         .addIntegerOption((opt) =>
           opt
@@ -105,15 +120,8 @@ export default {
     )
     .addSubcommand((sub) =>
       sub
-        .setName("config")
-        .setDescription("Configura a duração máxima de áudio")
-        .addIntegerOption((opt) =>
-          opt
-            .setName("duracao")
-            .setDescription("Duração máxima em segundos (1-60 para admins, qualquer valor para owner)")
-            .setRequired(true)
-            .setMinValue(1)
-        ),
+        .setName("stop")
+        .setDescription("Para a reprodução atual do soundboard")
     )
     .addSubcommand((sub) =>
       sub
@@ -129,23 +137,10 @@ export default {
         .addIntegerOption((opt) =>
           opt
             .setName("volume")
-            .setDescription("Volume do soundboard (1-100)")
+            .setDescription("Volume do soundboard (1-200)")
             .setRequired(false)
             .setMinValue(1)
-            .setMaxValue(100)
-        )
-        .addStringOption((opt) =>
-          opt
-            .setName("emoji")
-            .setDescription("Emoji para o som")
-            .setRequired(false)
-            .setMaxLength(10)
-        )
-        .addStringOption((opt) =>
-          opt
-            .setName("nome")
-            .setDescription("Nome do som (usado com emoji)")
-            .setRequired(false)
+            .setMaxValue(200)
         )
         .addBooleanOption((opt) =>
           opt
@@ -157,17 +152,18 @@ export default {
 
   async execute(interaction) {
     try {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
       const subcommand = interaction.options.getSubcommand();
       const guildId = interaction.guild.id;
       const userId = interaction.user.id;
 
       if (subcommand === "add") {
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
         const nome = interaction.options.getString("nome");
-        const emoji = interaction.options.getString("emoji") || null;
+        const emoji = interaction.options.getString("emoji");
         const attachment = interaction.options.getAttachment("arquivo");
         const link = interaction.options.getString("link");
+        const comprimentoMs = interaction.options.getInteger("comprimento");
 
         // Validação: precisa ter arquivo ou link
         if (!attachment && !link) {
@@ -216,6 +212,34 @@ export default {
           }
         }
 
+        // Obtém duração máxima configurada por servidor
+        const serverMaxDuration = getMaxSoundDuration(guildId);
+
+        // Calcula limite efetivo por tipo de usuário
+        let maxDuration = serverMaxDuration;
+
+        const isUserOwner = isOwner(userId);
+        const isUserAdmin = interaction.member.permissions.has(PermissionFlagsBits.Administrator);
+
+        if (!isUserOwner && !isUserAdmin) {
+          // Usuário comum fica limitado ao mínimo entre limite do servidor e 15s
+          maxDuration = Math.min(serverMaxDuration, 15);
+        }
+
+        // Se o usuário informou comprimento em ms, respeita o menor entre o limite e o comprimento
+        if (comprimentoMs !== null) {
+          const comprimentoSegundos = comprimentoMs / 1000;
+          if (comprimentoSegundos > maxDuration) {
+            return interaction.editReply(
+              `❌ O comprimento solicitado (${comprimentoSegundos.toFixed(
+                2
+              )}s) ultrapassa o limite permitido de ${maxDuration}s.`
+            );
+          }
+
+          maxDuration = Math.min(maxDuration, comprimentoSegundos);
+        }
+
         try {
           // Atualiza resposta para indicar processamento
           await interaction.editReply(
@@ -236,31 +260,6 @@ export default {
             await downloadAttachment(attachment, tempInputPath);
           } else {
             await downloadFromUrl(link, tempInputPath);
-          }
-
-          // Obtém duração máxima configurada
-          // Owner usa configuração por usuário (pode ser null = sem limite)
-          // Admin usa configuração do servidor (máximo 60s)
-          // Outros usam padrão (15s)
-          let maxDuration;
-          if (isOwner(userId)) {
-            const userMaxDuration = getUserMaxSoundDuration(userId);
-            // Se configurado como null, mantém null (sem limite)
-            // Se não configurado (null inicial), usa o padrão do servidor
-            if (userMaxDuration === null) {
-              // Verifica se foi explicitamente configurado como null ou se é o valor padrão
-              // Se o usuário não tem configuração, getUserMaxSoundDuration retorna null
-              // Nesse caso, usamos a configuração do servidor
-              maxDuration = getMaxSoundDuration(guildId);
-            } else {
-              // Owner tem configuração numérica, usa ela (pode ser qualquer valor)
-              maxDuration = userMaxDuration;
-            }
-          } else if (interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-            maxDuration = getMaxSoundDuration(guildId);
-          } else {
-            // Usuário comum usa padrão
-            maxDuration = 15;
           }
 
           // Processa e salva o áudio
@@ -301,8 +300,10 @@ export default {
           const format = attachment ? path.extname(attachment.name).slice(1).toUpperCase() : "URL";
           console.log(`[SOUNDBOARD] Add | Guild: ${guildId} | User: ${userId} | Sound: ${nome} | Duration: ${duration.toFixed(1)}s | Format: ${format} | Size: ${fileSizeKB}KB | Emoji: ${emoji || "none"}`);
 
+          const newIndex = getSoundCount(guildId);
+
           return interaction.editReply(
-            `✅ Som "${nome}" adicionado com sucesso! (Duração: ${duration.toFixed(1)}s)`
+            `✅ Som "${nome}" adicionado com sucesso como **#${newIndex}**! (Duração: ${duration.toFixed(1)}s)`
           );
         } catch (error) {
           console.error("Erro ao adicionar som:", error);
@@ -313,9 +314,30 @@ export default {
       }
 
       if (subcommand === "remove") {
-        const nome = interaction.options.getString("nome");
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-        const result = removeSound(guildId, nome);
+        const nome = interaction.options.getString("nome");
+        const numero = interaction.options.getInteger("numero");
+
+        if (!nome && !numero) {
+          return interaction.editReply(
+            "❌ Você precisa fornecer um **nome** ou **número** do som para remover."
+          );
+        }
+
+        let targetName = nome;
+
+        if (numero !== null) {
+          const sound = getSoundByIndex(guildId, numero);
+          if (!sound) {
+            return interaction.editReply(
+              `❌ Som número ${numero} não encontrado.`
+            );
+          }
+          targetName = sound.name;
+        }
+
+        const result = removeSound(guildId, targetName);
 
         if (!result.success) {
           return interaction.editReply(`❌ ${result.error}`);
@@ -324,13 +346,19 @@ export default {
         // Remove arquivo físico
         if (result.sound) {
           deleteSoundFile(guildId, result.sound.id);
-          console.log(`[SOUNDBOARD] Remove | Guild: ${guildId} | User: ${userId} | Sound: ${nome} | ID: ${result.sound.id}`);
+          console.log(
+            `[SOUNDBOARD] Remove | Guild: ${guildId} | User: ${userId} | Sound: ${result.sound.name} | ID: ${result.sound.id}`
+          );
         }
 
-        return interaction.editReply(`✅ Som "${nome}" removido com sucesso!`);
+        return interaction.editReply(
+          `✅ Som "${result.sound.name}" removido com sucesso!`
+        );
       }
 
       if (subcommand === "play") {
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
         const nome = interaction.options.getString("nome");
         const numero = interaction.options.getInteger("numero");
 
@@ -401,11 +429,11 @@ export default {
           // Log melhorado
           console.log(`[SOUNDBOARD] Play | Guild: ${guildId} | User: ${userId} | Sound: ${sound.name} (${soundIdentifier}) | Volume: ${volumePercent}%`);
 
-          // Reproduz o som com volume
-          await playSoundFile(guildId, filePath, volumePercent);
+          // Reproduz o som com volume (interrompendo qualquer som atual)
+          await playSoundFileImmediate(guildId, filePath, volumePercent);
 
           // Atualiza resposta com sucesso
-          await interaction.editReply(`✅ Som "${soundDisplayName}" reproduzido com sucesso!`);
+          await interaction.editReply(`✅ Som "${soundDisplayName}" está sendo reproduzido!`);
         } catch (error) {
           console.error(`[SOUNDBOARD] Play Error | Guild: ${guildId} | User: ${userId} | Error:`, error);
           return interaction.editReply(
@@ -415,6 +443,9 @@ export default {
       }
 
       if (subcommand === "list") {
+        // Lista deve ser pública para permitir reações
+        await interaction.deferReply();
+
         const sounds = getSounds(guildId);
         const count = getSoundCount(guildId);
 
@@ -427,8 +458,6 @@ export default {
           return interaction.editReply({ embeds: [embed] });
         }
 
-        // Emojis numéricos para reações
-        const numberEmojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"];
         const ITEMS_PER_PAGE = 10;
         const totalPages = Math.ceil(count / ITEMS_PER_PAGE);
         let currentPage = 0;
@@ -446,7 +475,7 @@ export default {
                 ? `${sound.duration.toFixed(1)}s`
                 : "N/A";
               const emojiDisplay = sound.emoji ? `${sound.emoji} ` : "";
-              return `${numberEmojis[index]} ${emojiDisplay}**${sound.name}** (${duration})`;
+              return `${globalIndex + 1}. ${emojiDisplay}**${sound.name}** (${duration})`;
             })
             .join("\n");
 
@@ -462,234 +491,208 @@ export default {
           return embed;
         };
 
-        // Envia embed inicial
-        const embed = createListEmbed(currentPage);
-        const message = await interaction.editReply({ embeds: [embed] });
+        // Cria botões para a página atual
+        const createPageComponents = (page) => {
+          const startIndex = page * ITEMS_PER_PAGE;
+          const endIndex = Math.min(startIndex + ITEMS_PER_PAGE, count);
+          const pageSounds = sounds.slice(startIndex, endIndex);
 
-        // Adiciona reações (números + setas de navegação)
-        const reactionsToAdd = [];
-        
-        // Adiciona números para os sons da primeira página
-        const firstPageCount = Math.min(ITEMS_PER_PAGE, count);
-        for (let i = 0; i < firstPageCount; i++) {
-          reactionsToAdd.push(numberEmojis[i]);
-        }
+          const rows = [];
 
-        // Adiciona setas de navegação se houver mais de uma página
-        if (totalPages > 1) {
-          reactionsToAdd.push("⬅️", "➡️");
-        }
+          // Botões 1–5
+          const row1 = new ActionRowBuilder();
+          // Botões 6–10
+          const row2 = new ActionRowBuilder();
 
-        // Adiciona reações sequencialmente
-        for (const emoji of reactionsToAdd) {
-          try {
-            await message.react(emoji);
-          } catch (error) {
-            console.error(`Erro ao adicionar reação ${emoji}:`, error);
+          pageSounds.forEach((sound, idx) => {
+            const globalIndex = startIndex + idx; // 0-based
+            const labelNumber = globalIndex + 1; // 1-based para exibição
+            const button = new ButtonBuilder()
+              .setCustomId(`sound_list_play_${globalIndex}`)
+              .setStyle(ButtonStyle.Secondary)
+              .setLabel(labelNumber.toString());
+
+            if (idx < 5) {
+              row1.addComponents(button);
+            } else {
+              row2.addComponents(button);
+            }
+          });
+
+          if (row1.components.length > 0) rows.push(row1);
+          if (row2.components.length > 0) rows.push(row2);
+
+          // Row de navegação
+          if (totalPages > 1) {
+            const navRow = new ActionRowBuilder().addComponents(
+              new ButtonBuilder()
+                .setCustomId("sound_list_prev")
+                .setStyle(ButtonStyle.Primary)
+                .setEmoji("⬅️")
+                .setDisabled(page === 0),
+              new ButtonBuilder()
+                .setCustomId("sound_list_next")
+                .setStyle(ButtonStyle.Primary)
+                .setEmoji("➡️")
+                .setDisabled(page === totalPages - 1)
+            );
+            rows.push(navRow);
           }
-        }
 
-        // Cria collector para reações
-        const filter = (reaction, user) => {
-          return !user.bot && user.id === userId;
+          return rows;
         };
 
-        const collector = message.createReactionCollector({
+        // Envia embed inicial com botões
+        const embed = createListEmbed(currentPage);
+        const components = createPageComponents(currentPage);
+        const message = await interaction.editReply({ embeds: [embed], components });
+
+        // Cria collector para botões
+        const filter = (i) =>
+          i.user.id === userId && i.message.id === message.id;
+
+        const collector = message.createMessageComponentCollector({
           filter,
           time: 60000, // 1 minuto
         });
 
-        collector.on("collect", async (reaction, user) => {
-          const emojiName = reaction.emoji.name;
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/40dfbc1c-b8ba-4ef2-bdf9-ffeda208e6a9',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'sound.js:list_buttons_collector_create',message:'Created button collector for sound list',data:{guildId,userId,count,totalPages},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
+        // #endregion
 
-          // Verifica se é um número (1-10)
-          const numberIndex = numberEmojis.indexOf(emojiName);
-          if (numberIndex !== -1) {
-            const soundIndex = currentPage * ITEMS_PER_PAGE + numberIndex;
+        collector.on("collect", async (interactionComponent) => {
+          const customId = interactionComponent.customId;
+
+          // #region agent log
+          fetch('http://127.0.0.1:7242/ingest/40dfbc1c-b8ba-4ef2-bdf9-ffeda208e6a9',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'sound.js:list_buttons_collect',message:'Button click in sound list',data:{guildId,userId:interactionComponent.user.id,customId,currentPage},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
+          // #endregion
+
+          if (customId === "sound_list_prev" || customId === "sound_list_next") {
+            if (customId === "sound_list_prev" && currentPage > 0) {
+              currentPage--;
+            } else if (customId === "sound_list_next" && currentPage < totalPages - 1) {
+              currentPage++;
+            }
+
+            const newEmbed = createListEmbed(currentPage);
+            const newComponents = createPageComponents(currentPage);
+            await interactionComponent.update({
+              embeds: [newEmbed],
+              components: newComponents,
+            });
+            return;
+          }
+
+          if (customId.startsWith("sound_list_play_")) {
+            const indexStr = customId.replace("sound_list_play_", "");
+            const soundIndex = parseInt(indexStr, 10);
+
+            if (Number.isNaN(soundIndex) || soundIndex < 0 || soundIndex >= sounds.length) {
+              await interactionComponent.reply({
+                content: "❌ Som não encontrado para este botão.",
+                ephemeral: true,
+              });
+              return;
+            }
+
             const sound = sounds[soundIndex];
 
-            if (sound) {
-              // Remove reação do usuário
-              try {
-                await reaction.users.remove(user.id);
-              } catch (error) {
-                // Ignora erro
-              }
+            // #region agent log
+            fetch('http://127.0.0.1:7242/ingest/40dfbc1c-b8ba-4ef2-bdf9-ffeda208e6a9',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'sound.js:list_buttons_play',message:'Play button mapped to sound',data:{soundIndex,soundId:sound.id,soundName:sound.name},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
+            // #endregion
+
+            try {
+              // Defer para evitar timeout de interação enquanto conecta/toca
+              await interactionComponent.deferReply({ ephemeral: true });
 
               // Verifica se usuário está em canal de voz
-              const member = interaction.guild.members.cache.get(user.id);
+              const member = interaction.guild.members.cache.get(interactionComponent.user.id);
               if (!member?.voice.channel) {
-                await interaction.followUp({
+                await interactionComponent.editReply({
                   content: "❌ Você precisa estar em um canal de voz para reproduzir um som.",
-                  flags: MessageFlags.Ephemeral,
                 });
                 return;
               }
 
               const channel = member.voice.channel;
               if (!channel.joinable) {
-                await interaction.followUp({
+                await interactionComponent.editReply({
                   content: "❌ Não tenho permissão para entrar neste canal de voz.",
-                  flags: MessageFlags.Ephemeral,
                 });
                 return;
               }
 
-              try {
-                // Auto-connect
-                await connectToChannel(channel);
+              // Auto-connect
+              await connectToChannel(channel);
 
-                const filePath = getSoundFilePath(guildId, sound.id);
-                if (fs.existsSync(filePath)) {
-                  const volumePercent = getSoundboardVolume(guildId);
-                  console.log(`[SOUNDBOARD] Play from List | Guild: ${guildId} | User: ${userId} | Sound: ${sound.name} (#${soundIndex + 1}) | Volume: ${volumePercent}%`);
-                  
-                  await playSoundFile(guildId, filePath, volumePercent);
-                  
-                  const soundDisplayName = sound.emoji ? `${sound.emoji} ${sound.name}` : sound.name;
-                  await interaction.followUp({
-                    content: `✅ Reproduzindo "${soundDisplayName}"...`,
-                    flags: MessageFlags.Ephemeral,
-                  });
-                }
-              } catch (error) {
-                console.error(`[SOUNDBOARD] Play Error from List | Guild: ${guildId} | User: ${userId}:`, error);
-                await interaction.followUp({
-                  content: `❌ Erro ao reproduzir som: ${error.message}`,
-                  flags: MessageFlags.Ephemeral,
+              const filePath = getSoundFilePath(guildId, sound.id);
+              const fileExists = fs.existsSync(filePath);
+
+              // #region agent log
+              fetch('http://127.0.0.1:7242/ingest/40dfbc1c-b8ba-4ef2-bdf9-ffeda208e6a9',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'sound.js:list_buttons_before_play',message:'About to play sound from list (button)',data:{guildId,userId:interactionComponent.user.id,soundId:sound.id,soundName:sound.name,fileExists},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'F'})}).catch(()=>{});
+              // #endregion
+
+              if (!fileExists) {
+                await interactionComponent.reply({
+                  content: "❌ Arquivo de áudio não foi encontrado.",
+                  ephemeral: true,
                 });
+                return;
               }
-            }
-            return;
-          }
 
-          // Navegação de páginas
-          if (emojiName === "⬅️" && currentPage > 0) {
-            currentPage--;
-            const newEmbed = createListEmbed(currentPage);
-            await message.edit({ embeds: [newEmbed] });
-            
-            // Remove reações antigas e adiciona novas
-            try {
-              await message.reactions.removeAll();
-              const newReactions = [];
-              const pageCount = Math.min(ITEMS_PER_PAGE, count - currentPage * ITEMS_PER_PAGE);
-              for (let i = 0; i < pageCount; i++) {
-                newReactions.push(numberEmojis[i]);
-              }
-              if (totalPages > 1) {
-                newReactions.push("⬅️", "➡️");
-              }
-              for (const emoji of newReactions) {
-                await message.react(emoji);
-              }
-            } catch (error) {
-              console.error("Erro ao atualizar reações:", error);
-            }
-          } else if (emojiName === "➡️" && currentPage < totalPages - 1) {
-            currentPage++;
-            const newEmbed = createListEmbed(currentPage);
-            await message.edit({ embeds: [newEmbed] });
-            
-            // Remove reações antigas e adiciona novas
-            try {
-              await message.reactions.removeAll();
-              const newReactions = [];
-              const pageCount = Math.min(ITEMS_PER_PAGE, count - currentPage * ITEMS_PER_PAGE);
-              for (let i = 0; i < pageCount; i++) {
-                newReactions.push(numberEmojis[i]);
-              }
-              if (totalPages > 1) {
-                newReactions.push("⬅️", "➡️");
-              }
-              for (const emoji of newReactions) {
-                await message.react(emoji);
-              }
-            } catch (error) {
-              console.error("Erro ao atualizar reações:", error);
-            }
-          }
+              const volumePercent = getSoundboardVolume(guildId);
+              console.log(
+                `[SOUNDBOARD] Play from List(Button) | Guild: ${guildId} | User: ${interactionComponent.user.id} | Sound: ${sound.name} (#${soundIndex + 1}) | Volume: ${volumePercent}%`
+              );
 
-          // Remove reação do usuário
-          try {
-            await reaction.users.remove(user.id);
-          } catch (error) {
-            // Ignora erro
+              // Reproduz imediatamente, interrompendo qualquer som atual
+              await playSoundFileImmediate(guildId, filePath, volumePercent);
+
+              const soundDisplayName = sound.emoji ? `${sound.emoji} ${sound.name}` : sound.name;
+              await interactionComponent.editReply({
+                content: `✅ Reproduzindo "${soundDisplayName}"...`,
+              });
+            } catch (error) {
+              console.error(
+                `[SOUNDBOARD] Play Error from List(Button) | Guild: ${guildId} | User: ${interactionComponent.user.id}:`,
+                error
+              );
+              try {
+                await interactionComponent.editReply({
+                  content: `❌ Erro ao reproduzir som: ${error.message}`,
+                });
+              } catch {
+                // Se não for possível editar (por erro anterior), ignora
+              }
+            }
           }
         });
 
         collector.on("end", async () => {
-          // Remove todas as reações quando o collector expira
           try {
-            await message.reactions.removeAll();
-          } catch (error) {
-            // Ignora erro
+            await message.edit({ components: [] });
+          } catch {
+            // ignora
           }
         });
       }
 
-      if (subcommand === "config") {
-        const duracao = interaction.options.getInteger("duracao");
-        const isUserOwner = isOwner(userId);
-        const isUserAdmin = interaction.member.permissions.has(PermissionFlagsBits.Administrator);
-
-        // Owner pode configurar qualquer duração (por usuário)
-        if (isUserOwner) {
-          const result = setUserMaxSoundDuration(userId, duracao);
-          if (!result.success) {
-            return interaction.editReply(`❌ ${result.error}`);
-          }
-
-          const limitText = duracao >= 60 ? " (sem limite prático)" : "";
-          return interaction.editReply(
-            `✅ Duração máxima de áudio configurada para **${duracao} segundos**${limitText}.\n` +
-            `⚠️ Esta configuração é **por usuário** e se aplica apenas a você (owner).`
-          );
-        }
-
-        // Admin pode configurar até 60 segundos (por servidor)
-        if (isUserAdmin) {
-          if (duracao > 60) {
-            return interaction.editReply(
-              "❌ Administradores podem configurar no máximo **60 segundos** por servidor.\n" +
-              "💡 Apenas o owner do bot pode configurar durações maiores."
-            );
-          }
-
-          const result = setMaxSoundDuration(guildId, duracao);
-          if (!result.success) {
-            return interaction.editReply(`❌ ${result.error}`);
-          }
-
-          return interaction.editReply(
-            `✅ Duração máxima de áudio configurada para **${duracao} segundos** neste servidor.\n` +
-            `📌 Esta configuração se aplica a todos os usuários do servidor.`
-          );
-        }
-
-        // Usuário comum não pode configurar
-        return interaction.editReply(
-          "❌ Você precisa ser **administrador** ou **owner do bot** para configurar a duração máxima."
-        );
-      }
-
       if (subcommand === "settings") {
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
         const duracao = interaction.options.getInteger("duracao");
         const volume = interaction.options.getInteger("volume");
-        const emoji = interaction.options.getString("emoji");
-        const nomeSom = interaction.options.getString("nome");
         const clear = interaction.options.getBoolean("clear");
 
         const isUserOwner = isOwner(userId);
         const isUserAdmin = interaction.member.permissions.has(PermissionFlagsBits.Administrator);
 
         // Se nenhuma opção fornecida, mostra embed com configurações
-        if (duracao === null && volume === null && emoji === null && clear === null) {
+        if (duracao === null && volume === null && clear === null) {
           const sounds = getSounds(guildId);
           const count = getSoundCount(guildId);
           const maxDuration = getMaxSoundDuration(guildId);
           const currentVolume = getSoundboardVolume(guildId);
-          const userMaxDuration = isUserOwner ? getUserMaxSoundDuration(userId) : null;
 
           const embed = new EmbedBuilder()
             .setTitle("⚙️ Configurações do Soundboard")
@@ -698,9 +701,7 @@ export default {
             .addFields(
               {
                 name: "📏 Duração Máxima",
-                value: isUserOwner && userMaxDuration !== null
-                  ? `Servidor: ${maxDuration}s\nUsuário (Owner): ${userMaxDuration === null ? "Sem limite" : `${userMaxDuration}s`}`
-                  : `${maxDuration}s`,
+                value: `${maxDuration}s`,
                 inline: true,
               },
               {
@@ -808,70 +809,80 @@ export default {
         }
 
         if (duracao !== null) {
-          // Configurar duração (mesma lógica do /sound config)
-          if (isUserOwner) {
-            const result = setUserMaxSoundDuration(userId, duracao);
-            if (!result.success) {
-              return interaction.editReply(`❌ ${result.error}`);
-            }
-            const limitText = duracao >= 60 ? " (sem limite prático)" : "";
+          // Configurar duração máxima por servidor
+          if (!isUserOwner && !isUserAdmin) {
             return interaction.editReply(
-              `✅ Duração máxima configurada para **${duracao} segundos**${limitText}.\n` +
-              `⚠️ Esta configuração é **por usuário** e se aplica apenas a você (owner).`
+              "❌ Você precisa ser **administrador** ou **owner do bot** para configurar a duração máxima."
             );
           }
 
-          if (isUserAdmin) {
-            if (duracao > 60) {
-              return interaction.editReply(
-                "❌ Administradores podem configurar no máximo **60 segundos**.\n" +
+          if (!isUserOwner && duracao > 60) {
+            return interaction.editReply(
+              "❌ Administradores podem configurar no máximo **60 segundos**.\n" +
                 "💡 Apenas o owner do bot pode configurar durações maiores."
-              );
-            }
-            const result = setMaxSoundDuration(guildId, duracao);
-            if (!result.success) {
-              return interaction.editReply(`❌ ${result.error}`);
-            }
-            console.log(`[SOUNDBOARD] Set Duration | Guild: ${guildId} | User: ${userId} | Duration: ${duracao}s`);
-            return interaction.editReply(
-              `✅ Duração máxima configurada para **${duracao} segundos** neste servidor.`
             );
           }
 
+          const result = setMaxSoundDuration(guildId, duracao);
+          if (!result.success) {
+            return interaction.editReply(`❌ ${result.error}`);
+          }
+
+          console.log(
+            `[SOUNDBOARD] Set Duration | Guild: ${guildId} | User: ${userId} | Duration: ${duracao}s`
+          );
           return interaction.editReply(
-            "❌ Você precisa ser **administrador** ou **owner do bot** para configurar a duração máxima."
+            `✅ Duração máxima de áudio configurada para **${duracao} segundos** neste servidor.\n` +
+              `📌 Esta configuração se aplica a todos os usuários do servidor.`
           );
         }
 
         if (volume !== null) {
-          // Configurar volume
+          // Configurar volume (1–200, mas apenas admins/owner podem passar de 100%)
+          if (volume > 100 && !isUserOwner && !isUserAdmin) {
+            return interaction.editReply(
+              "❌ Apenas **administradores** ou **owner do bot** podem configurar volume acima de **100%** (máximo 200%)."
+            );
+          }
+
           const result = setSoundboardVolume(guildId, volume);
           if (!result.success) {
             return interaction.editReply(`❌ ${result.error}`);
           }
-          console.log(`[SOUNDBOARD] Set Volume | Guild: ${guildId} | User: ${userId} | Volume: ${volume}%`);
+          console.log(
+            `[SOUNDBOARD] Set Volume | Guild: ${guildId} | User: ${userId} | Volume: ${volume}%`
+          );
           return interaction.editReply(
             `✅ Volume do soundboard configurado para **${volume}%**.`
           );
         }
+      }
 
-        if (emoji !== null && nomeSom !== null) {
-          // Atualizar emoji de um som
-          const result = updateSoundEmoji(guildId, nomeSom, emoji);
-          if (!result.success) {
-            return interaction.editReply(`❌ ${result.error}`);
-          }
-          console.log(`[SOUNDBOARD] Update Emoji | Guild: ${guildId} | User: ${userId} | Sound: ${nomeSom} | Emoji: ${emoji}`);
+      if (subcommand === "stop") {
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+        const guildId = interaction.guild.id;
+        const member = interaction.member;
+
+        // Verifica se usuário está em canal de voz
+        if (!member.voice?.channel) {
           return interaction.editReply(
-            `✅ Emoji do som "${nomeSom}" atualizado para ${emoji}.`
+            "❌ Você precisa estar em um canal de voz para usar o stop."
           );
         }
 
-        if (emoji !== null || nomeSom !== null) {
-          return interaction.editReply(
-            "❌ Você precisa fornecer tanto **emoji** quanto **nome** do som para atualizar o emoji."
-          );
+        // Verifica se há algo tocando
+        if (!isPlayingAudio(guildId)) {
+          return interaction.editReply("ℹ️ Nenhum áudio está sendo reproduzido no momento.");
         }
+
+        const stopped = stopSound(guildId);
+
+        if (!stopped) {
+          return interaction.editReply("❌ Não consegui parar o áudio atual (nenhum player ativo encontrado).");
+        }
+
+        return interaction.editReply("⏹️ Reprodução do soundboard parada com sucesso.");
       }
     } catch (error) {
       console.error("Erro no comando sound:", error);

@@ -25,6 +25,7 @@ const SUPPORTED_FORMATS = [
   "wma",
   "opus",
   "webm",
+  "mpeg",
 ];
 
 // Duração máxima padrão em segundos (usado quando não há configuração customizada)

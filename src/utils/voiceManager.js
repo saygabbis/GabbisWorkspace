@@ -289,10 +289,30 @@ export function isPlayingAudio(guildId) {
 }
 
 /**
+ * Interrompe a reprodução de áudio atual (sem desconectar do canal)
+ * @param {string} guildId - ID do servidor
+ * @returns {boolean} true se havia algo para parar, false caso contrário
+ */
+export function stopSound(guildId) {
+  const player = players.get(guildId);
+  if (!player) {
+    return false;
+  }
+
+  try {
+    player.stop();
+    isPlaying.set(guildId, false);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Reproduz um arquivo de áudio diretamente
  * @param {string} guildId - ID do servidor
  * @param {string} filePath - Caminho do arquivo de áudio
- * @param {number|null} volumePercent - Volume em porcentagem (1-100, opcional, usa configuração do servidor se não fornecido)
+ * @param {number|null} volumePercent - Volume em porcentagem (1-200, opcional, usa configuração do servidor se não fornecido)
  * @returns {Promise<void>}
  */
 export async function playSoundFile(guildId, filePath, volumePercent = null) {
@@ -351,6 +371,66 @@ export async function playSoundFile(guildId, filePath, volumePercent = null) {
     });
 
     isPlaying.set(guildId, false);
+  } catch (error) {
+    isPlaying.set(guildId, false);
+    throw error;
+  }
+}
+
+/**
+ * Reproduz um arquivo de áudio interrompendo o som atual (modo imediato)
+ * Usado para o soundboard, permitindo trocar rapidamente de áudio.
+ * @param {string} guildId - ID do servidor
+ * @param {string} filePath - Caminho do arquivo de áudio
+ * @param {number|null} volumePercent - Volume em porcentagem (1-200, opcional, usa configuração do servidor se não fornecido)
+ * @returns {Promise<void>}
+ */
+export async function playSoundFileImmediate(guildId, filePath, volumePercent = null) {
+  const connection = getVoiceConnection(guildId);
+  if (!connection) {
+    throw new Error("Bot não está conectado a um canal de voz");
+  }
+
+  const player = players.get(guildId);
+  if (!player) {
+    throw new Error("Player de áudio não encontrado");
+  }
+
+  if (!fs.existsSync(filePath)) {
+    throw new Error(`Arquivo de áudio não encontrado: ${filePath}`);
+  }
+
+  try {
+    // Interrompe qualquer áudio atual imediatamente
+    try {
+      player.stop();
+    } catch {
+      // ignora erro ao parar
+    }
+
+    // Cria recurso de áudio
+    const resource = createAudioResource(filePath, {
+      inlineVolume: true,
+    });
+
+    // Aplica volume (converte de porcentagem para decimal: 60% = 0.6)
+    // Se volumePercent não fornecido, usa configuração do servidor
+    const volume = volumePercent !== null
+      ? volumePercent / 100
+      : getSoundboardVolume(guildId) / 100;
+    resource.volume.setVolume(volume);
+
+    isPlaying.set(guildId, true);
+
+    // Reproduz sem aguardar o término (fire-and-forget)
+    player.play(resource);
+
+    // Quando ficar idle, marca como não reproduzindo
+    const onIdle = () => {
+      isPlaying.set(guildId, false);
+      player.off(AudioPlayerStatus.Idle, onIdle);
+    };
+    player.on(AudioPlayerStatus.Idle, onIdle);
   } catch (error) {
     isPlaying.set(guildId, false);
     throw error;

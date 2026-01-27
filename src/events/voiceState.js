@@ -11,7 +11,10 @@ import {
   unregisterActiveProtection,
   getActiveProtectionsForChannel,
 } from "../state/voiceProtection.js";
-import { isConnected, getCurrentChannel, onUnexpectedDisconnect, clearUnexpectedDisconnection } from "../utils/voiceManager.js";
+import { isConnected, getCurrentChannel, onUnexpectedDisconnect, clearUnexpectedDisconnection, disconnectFromChannel } from "../utils/voiceManager.js";
+  
+  // Timeouts de auto-desconexão por guild (quando o bot fica sozinho em call)
+  const autoDisconnectTimers = new Map(); // guildId -> timeoutId
   
   /**
    * Guarda janelas armadas por:
@@ -919,5 +922,94 @@ import { isConnected, getCurrentChannel, onUnexpectedDisconnect, clearUnexpected
           unregisterActiveProtection(triggerChannelId, key);
         }
       }
+    }
+  
+    // ===============================
+    // 3️⃣ AUTO-DESCONEXÃO APÓS 3 MINUTOS SOZINHO
+    // ===============================
+    try {
+      const botId = guild.client.user.id;
+      const guildIdForAuto = guild.id;
+  
+      // Verifica se o bot está conectado a algum canal de voz nesta guild
+      if (!isConnected(guildIdForAuto)) {
+        // Se não estiver conectado, garante que não há timeout pendente
+        if (autoDisconnectTimers.has(guildIdForAuto)) {
+          clearTimeout(autoDisconnectTimers.get(guildIdForAuto));
+          autoDisconnectTimers.delete(guildIdForAuto);
+        }
+        return;
+      }
+  
+      const currentChannelId = getCurrentChannel(guildIdForAuto);
+      if (!currentChannelId) {
+        if (autoDisconnectTimers.has(guildIdForAuto)) {
+          clearTimeout(autoDisconnectTimers.get(guildIdForAuto));
+          autoDisconnectTimers.delete(guildIdForAuto);
+        }
+        return;
+      }
+  
+      const channel = guild.channels.cache.get(currentChannelId);
+      if (!channel || !channel.isVoiceBased?.()) {
+        if (autoDisconnectTimers.has(guildIdForAuto)) {
+          clearTimeout(autoDisconnectTimers.get(guildIdForAuto));
+          autoDisconnectTimers.delete(guildIdForAuto);
+        }
+        return;
+      }
+  
+      // Conta quantos membros humanos (não-bot) estão no canal, excluindo o próprio bot
+      const otherMembers = channel.members.filter(
+        (m) => m.id !== botId && !m.user.bot
+      );
+  
+      if (otherMembers.size === 0) {
+        // Bot ficou sozinho: agenda auto-desconexão em 3 minutos se ainda não houver timeout
+        if (!autoDisconnectTimers.has(guildIdForAuto)) {
+          const timeoutId = setTimeout(async () => {
+            try {
+              // Revalida antes de desconectar
+              if (!isConnected(guildIdForAuto)) {
+                autoDisconnectTimers.delete(guildIdForAuto);
+                return;
+              }
+  
+              const recheckChannelId = getCurrentChannel(guildIdForAuto);
+              if (!recheckChannelId) {
+                autoDisconnectTimers.delete(guildIdForAuto);
+                return;
+              }
+  
+              const recheckChannel = guild.channels.cache.get(recheckChannelId);
+              if (!recheckChannel || !recheckChannel.isVoiceBased?.()) {
+                autoDisconnectTimers.delete(guildIdForAuto);
+                return;
+              }
+  
+              const recheckOthers = recheckChannel.members.filter(
+                (m) => m.id !== botId && !m.user.bot
+              );
+  
+              if (recheckOthers.size === 0) {
+                // Continua sozinho após 3 minutos -> desconecta
+                disconnectFromChannel(guildIdForAuto);
+              }
+            } finally {
+              autoDisconnectTimers.delete(guildIdForAuto);
+            }
+          }, 180000); // 3 minutos
+  
+          autoDisconnectTimers.set(guildIdForAuto, timeoutId);
+        }
+      } else {
+        // Há outras pessoas na call: cancela timeout se existir
+        if (autoDisconnectTimers.has(guildIdForAuto)) {
+          clearTimeout(autoDisconnectTimers.get(guildIdForAuto));
+          autoDisconnectTimers.delete(guildIdForAuto);
+        }
+      }
+    } catch {
+      // Qualquer erro aqui não deve quebrar o restante da lógica de voiceState
     }
   }
