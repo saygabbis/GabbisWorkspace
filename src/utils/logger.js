@@ -1,6 +1,7 @@
 // src/utils/logger.js
 
-import { getLogChannel } from "../state/guildConfigs.js";
+import { getLogChannel, getCommandLogs } from "../state/guildConfigs.js";
+import { EmbedBuilder } from "discord.js";
 
 /**
  * Formata timestamp para exibição
@@ -20,24 +21,137 @@ function formatDuration(ms) {
 }
 
 /**
- * Log de informação no console
+ * Formata timestamp para console
  */
-export function logInfo(message) {
-  console.log(`ℹ️ ${message}`);
+function formatConsoleTimestamp() {
+  const now = new Date();
+  return now.toLocaleString("pt-BR", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
 }
 
 /**
- * Log de aviso no console
+ * Log de informação no console (melhorado)
  */
-export function logWarn(message) {
-  console.warn(`⚠️ ${message}`);
+export function logInfo(message, data = null) {
+  const timestamp = formatConsoleTimestamp();
+  const dataStr = data ? ` | Data: ${JSON.stringify(data)}` : "";
+  console.log(`[${timestamp}] ℹ️ INFO: ${message}${dataStr}`);
 }
 
 /**
- * Log de erro no console
+ * Log de aviso no console (melhorado)
  */
-export function logError(message, error = null) {
-  console.error(`❌ ${message}`, error ? error : "");
+export function logWarn(message, data = null) {
+  const timestamp = formatConsoleTimestamp();
+  const dataStr = data ? ` | Data: ${JSON.stringify(data)}` : "";
+  console.warn(`[${timestamp}] ⚠️ WARN: ${message}${dataStr}`);
+}
+
+/**
+ * Log de erro no console (melhorado)
+ */
+export function logError(message, error = null, data = null) {
+  const timestamp = formatConsoleTimestamp();
+  const dataStr = data ? ` | Data: ${JSON.stringify(data)}` : "";
+  const errorStr = error ? ` | Error: ${error.message || error}` : "";
+  console.error(`[${timestamp}] ❌ ERROR: ${message}${dataStr}${errorStr}`);
+  if (error && error.stack) {
+    console.error(`Stack trace:`, error.stack);
+  }
+}
+
+/**
+ * Log de comando executado (console e Discord se configurado)
+ * @param {import("discord.js").Client} client - Cliente do Discord
+ * @param {string} guildId - ID do servidor
+ * @param {string} commandName - Nome do comando
+ * @param {import("discord.js").User} user - Usuário que executou
+ * @param {Object} options - Opções do comando (opcional)
+ * @param {string} result - Resultado/status do comando (opcional)
+ */
+export async function logCommand(client, guildId, commandName, user, options = null, result = null) {
+  const timestamp = formatConsoleTimestamp();
+  const optionsStr = options ? ` | Options: ${JSON.stringify(options)}` : "";
+  const resultStr = result ? ` | Result: ${result}` : "";
+  
+  // Log no console
+  console.log(`[${timestamp}] 📝 COMMAND: /${commandName} | User: ${user.tag} (${user.id}) | Guild: ${guildId}${optionsStr}${resultStr}`);
+
+  // Verifica se deve logar no Discord
+  const commandLogs = getCommandLogs(guildId);
+  if (!commandLogs || !client) return;
+
+  // Verifica se deve logar este comando específico
+  // Se commands é null, loga tudo (geral)
+  // Se commands é array, só loga se o comando estiver na lista
+  if (commandLogs.commands !== null && !commandLogs.commands.includes(commandName)) {
+    return; // Não deve logar este comando
+  }
+
+  try {
+    const guild = await client.guilds.fetch(guildId).catch(() => null);
+    if (!guild) return;
+
+    const logChannel = await guild.channels.fetch(commandLogs.channelId).catch(() => null);
+    if (!logChannel || !logChannel.isTextBased()) return;
+
+    const embed = new EmbedBuilder()
+      .setColor(0x5865F2)
+      .setTitle(`📝 Comando Executado: /${commandName}`)
+      .addFields(
+        {
+          name: "👤 Usuário",
+          value: `<@${user.id}> (${user.tag})`,
+          inline: true,
+        },
+        {
+          name: "🆔 ID",
+          value: user.id,
+          inline: true,
+        },
+        {
+          name: "⏰ Timestamp",
+          value: `<t:${Math.floor(Date.now() / 1000)}:F>`,
+          inline: true,
+        }
+      )
+      .setTimestamp();
+
+    if (options && Object.keys(options).length > 0) {
+      const optionsText = Object.entries(options)
+        .map(([key, value]) => `**${key}**: ${value}`)
+        .join("\n");
+      embed.addFields({
+        name: "⚙️ Opções",
+        value: optionsText.substring(0, 1024) || "Nenhuma",
+        inline: false,
+      });
+    }
+
+    if (result) {
+      embed.addFields({
+        name: "📊 Resultado",
+        value: result.substring(0, 1024),
+        inline: false,
+      });
+    }
+
+    embed.setFooter({
+      text: `Servidor: ${guild.name}`,
+    });
+
+    await logChannel.send({ embeds: [embed] }).catch(() => {
+      // Silenciosamente falha se não conseguir enviar
+    });
+  } catch (err) {
+    // Silenciosamente falha se houver erro
+  }
 }
 
 /**

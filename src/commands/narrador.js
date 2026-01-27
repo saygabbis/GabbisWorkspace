@@ -1,6 +1,7 @@
 import { SlashCommandBuilder, MessageFlags } from "discord.js";
-import { connectToChannel, disconnectFromChannel, playTTS, isConnected, getCurrentChannel, isPlayingAudio } from "../utils/voiceManager.js";
+import { connectToChannel, playTTS, isPlayingAudio } from "../utils/voiceManager.js";
 import { getUserLanguage, setUserLanguage } from "../state/userConfigs.js";
+import { getNarradorSayUser } from "../state/guildConfigs.js";
 
 // Lista de idiomas suportados
 const SUPPORTED_LANGUAGES = [
@@ -19,16 +20,6 @@ export default {
   data: new SlashCommandBuilder()
     .setName("narrador")
     .setDescription("Sistema de narração de texto em canais de voz")
-    .addSubcommand(sub =>
-      sub
-        .setName("join")
-        .setDescription("Entra no canal de voz atual do usuário")
-    )
-    .addSubcommand(sub =>
-      sub
-        .setName("leave")
-        .setDescription("Sai do canal de voz atual")
-    )
     .addSubcommand(sub =>
       sub
         .setName("language")
@@ -52,6 +43,21 @@ export default {
             .setRequired(true)
             .setMaxLength(500)
         )
+    )
+    .addSubcommand(sub =>
+      sub
+        .setName("toggle")
+        .setDescription("Ativa/desativa se o bot fala o nome de quem enviou a mensagem")
+        .addStringOption(opt =>
+          opt
+            .setName("user")
+            .setDescription("Toggle para falar nome do usuário")
+            .setRequired(true)
+            .addChoices(
+              { name: "Ativado", value: "on" },
+              { name: "Desativado", value: "off" }
+            )
+        )
     ),
 
   async execute(interaction) {
@@ -59,55 +65,7 @@ export default {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
       const subcommand = interaction.options.getSubcommand();
-
-      if (subcommand === "join") {
-        // Verifica se o usuário está em um canal de voz
-        const member = interaction.member;
-        if (!member.voice.channel) {
-          return interaction.editReply(
-            "❌ Você precisa estar em um canal de voz para usar este comando."
-          );
-        }
-
-        // Verifica se o bot pode se conectar ao canal
-        const channel = member.voice.channel;
-        if (!channel.joinable) {
-          return interaction.editReply(
-            "❌ Não tenho permissão para entrar neste canal de voz."
-          );
-        }
-
-        try {
-          await connectToChannel(channel);
-          return interaction.editReply(
-            `✅ Entrei no canal de voz: **${channel.name}**`
-          );
-        } catch (error) {
-          console.error("Erro ao conectar ao canal:", error);
-          return interaction.editReply(
-            `❌ Erro ao entrar no canal de voz: ${error.message}`
-          );
-        }
-      }
-
-      if (subcommand === "leave") {
-        const guildId = interaction.guild.id;
-        
-        if (!isConnected(guildId)) {
-          return interaction.editReply(
-            "⚠️ Não estou conectado a nenhum canal de voz."
-          );
-        }
-
-        const disconnected = disconnectFromChannel(guildId);
-        if (disconnected) {
-          return interaction.editReply("✅ Saí do canal de voz.");
-        } else {
-          return interaction.editReply(
-            "❌ Erro ao sair do canal de voz."
-          );
-        }
-      }
+      const guildId = interaction.guild.id;
 
       if (subcommand === "language") {
         const language = interaction.options.getString("idioma");
@@ -115,6 +73,8 @@ export default {
 
         const wasChanged = setUserLanguage(userId, language);
         const languageName = SUPPORTED_LANGUAGES.find(l => l.value === language)?.name || language;
+
+        console.log(`[NARRADOR] Language | User: ${interaction.user.tag} (${userId}) | Language: ${language} (${languageName}) | Changed: ${wasChanged}`);
 
         if (wasChanged) {
           return interaction.editReply(
@@ -129,13 +89,21 @@ export default {
 
       if (subcommand === "mensagem") {
         const text = interaction.options.getString("texto");
-        const guildId = interaction.guild.id;
         const userId = interaction.user.id;
+        const member = interaction.member;
 
-        // Verifica se o bot está conectado
-        if (!isConnected(guildId)) {
+        // Verifica se o usuário está em um canal de voz
+        if (!member.voice?.channel) {
           return interaction.editReply(
-            "❌ Não estou conectado a um canal de voz. Use `/narrador join` primeiro."
+            "❌ Você precisa estar em um canal de voz para usar este comando."
+          );
+        }
+
+        // Verifica se o bot pode se conectar ao canal
+        const channel = member.voice.channel;
+        if (!channel.joinable) {
+          return interaction.editReply(
+            "❌ Não tenho permissão para entrar neste canal de voz."
           );
         }
 
@@ -146,8 +114,27 @@ export default {
           );
         }
 
+        // Auto-connect: conecta ao canal do usuário
+        try {
+          await connectToChannel(channel);
+        } catch (error) {
+          console.error("Erro ao conectar ao canal:", error);
+          return interaction.editReply(
+            `❌ Erro ao entrar no canal de voz: ${error.message}`
+          );
+        }
+
         // Busca idioma do usuário
         const language = getUserLanguage(userId);
+
+        // Verifica se deve falar o nome do usuário
+        const sayUser = getNarradorSayUser(guildId);
+        let finalText = text;
+        
+        if (sayUser) {
+          const userDisplayName = member.displayName || member.user.displayName || member.user.username;
+          finalText = `${userDisplayName} disse: ${text}`;
+        }
 
         try {
           // Responde que está processando
@@ -155,17 +142,39 @@ export default {
             `🔊 Narrando mensagem em **${SUPPORTED_LANGUAGES.find(l => l.value === language)?.name || language}**...`
           );
 
+          console.log(`[NARRADOR] Mensagem | Guild: ${guildId} | User: ${interaction.user.tag} (${userId}) | Language: ${language} | SayUser: ${sayUser} | TextLength: ${text.length} | FinalLength: ${finalText.length}`);
+
           // Reproduz TTS
-          await playTTS(guildId, text, language);
+          await playTTS(guildId, finalText, language);
 
           // Atualiza resposta com sucesso
           await interaction.editReply(
             `✅ Mensagem narrada com sucesso!`
           );
         } catch (error) {
-          console.error("Erro ao narrar mensagem:", error);
+          console.error(`[NARRADOR] Erro | Guild: ${guildId} | User: ${interaction.user.tag} (${userId}) | Error:`, error);
           return interaction.editReply(
             `❌ Erro ao narrar mensagem: ${error.message}`
+          );
+        }
+      }
+
+      if (subcommand === "toggle") {
+        const toggleValue = interaction.options.getString("user");
+        const enabled = toggleValue === "on";
+        
+        const { setNarradorSayUser } = await import("../state/guildConfigs.js");
+        const wasChanged = setNarradorSayUser(guildId, enabled);
+        
+        console.log(`[NARRADOR] Toggle User | Guild: ${guildId} | User: ${interaction.user.tag} (${interaction.user.id}) | Enabled: ${enabled} | Changed: ${wasChanged}`);
+        
+        if (wasChanged) {
+          return interaction.editReply(
+            `✅ Narrador agora está ${enabled ? "**falando o nome**" : "**não falando o nome**"} de quem enviou a mensagem.`
+          );
+        } else {
+          return interaction.editReply(
+            `ℹ️ Narrador já estava configurado para ${enabled ? "**falar o nome**" : "**não falar o nome**"} do usuário.`
           );
         }
       }

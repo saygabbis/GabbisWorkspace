@@ -7,6 +7,7 @@ import {
   isUserBlacklisted,
   isCommandBlacklisted,
 } from "../state/blacklist.js";
+import { logCommand } from "../utils/logger.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -70,14 +71,46 @@ export async function onInteractionCreate(interaction) {
             // ignora
           }
         }
-      } else {
-        // Subcomando sem autocomplete específico
-        try {
-          await interaction.respond([]);
-        } catch {
-          // ignora
-        }
+        return;
       }
+    }
+
+    // Autocomplete para /logs add/remove (nomes de comandos)
+    if (interaction.commandName === "logs" && interaction.guild) {
+      const sub = interaction.options.getSubcommand(false);
+      if (sub === "add" || sub === "remove") {
+        try {
+          const focused = interaction.options.getFocused() || "";
+          const normalized = focused.toLowerCase();
+
+          // Lista todos os comandos disponíveis
+          const commandNames = Array.from(commands.keys()).filter((name) =>
+            name.toLowerCase().includes(normalized)
+          );
+
+          const choices = commandNames.slice(0, 25).map((name) => ({
+            name: `/${name}`,
+            value: name,
+          }));
+
+          await interaction.respond(choices);
+        } catch (err) {
+          console.error("Erro no autocomplete de /logs:", err);
+          try {
+            await interaction.respond([]);
+          } catch {
+            // ignora
+          }
+        }
+        return;
+      }
+    }
+
+    // Outros autocompletes
+    try {
+      await interaction.respond([]);
+    } catch {
+      // ignora
     }
 
     return;
@@ -114,9 +147,53 @@ export async function onInteractionCreate(interaction) {
       }
     }
 
+    // Extrai opções do comando para log
+    const options = {};
+    if (interaction.options) {
+      for (const option of interaction.options.data || []) {
+        if (option.value !== undefined && option.value !== null) {
+          options[option.name] = option.value;
+        }
+      }
+    }
+
+    // Executa o comando
     await command.execute(interaction);
+
+    // Log do comando após execução bem-sucedida
+    if (interaction.guild) {
+      try {
+        await logCommand(
+          interaction.client,
+          interaction.guild.id,
+          interaction.commandName,
+          interaction.user,
+          Object.keys(options).length > 0 ? options : null,
+          "Executado com sucesso"
+        );
+      } catch (logError) {
+        // Não quebra o fluxo se o log falhar
+        console.error("Erro ao logar comando:", logError);
+      }
+    }
   } catch (err) {
-    console.error(err);
+    console.error(`[${new Date().toLocaleString("pt-BR")}] ❌ ERROR: Comando /${interaction.commandName} falhou | User: ${interaction.user.tag} (${interaction.user.id}) | Guild: ${interaction.guild?.id || "DM"} | Error:`, err);
+
+    // Log de erro no Discord se configurado
+    if (interaction.guild) {
+      try {
+        await logCommand(
+          interaction.client,
+          interaction.guild.id,
+          interaction.commandName,
+          interaction.user,
+          null,
+          `❌ Erro: ${err.message || "Erro desconhecido"}`
+        );
+      } catch {
+        // Ignora erro de log
+      }
+    }
 
     if (!interaction.replied && !interaction.deferred) {
       await interaction.reply({

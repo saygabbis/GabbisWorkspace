@@ -38,6 +38,18 @@ function migrateConfig(config) {
     needsSave = true;
   }
 
+  // Garante que tem narradorSayUser (padrão false)
+  if (config.narradorSayUser === undefined) {
+    config.narradorSayUser = false;
+    needsSave = true;
+  }
+
+  // Garante que tem commandLogs (padrão null - sem logs específicos)
+  if (config.commandLogs === undefined) {
+    config.commandLogs = null; // null = sem logs, ou { channelId: string, commands: [] } = logs por comando, ou { channelId: string, commands: null } = logs gerais
+    needsSave = true;
+  }
+
   // Migra proteções antigas para incluir stats e mode
   if (config.protections && Array.isArray(config.protections)) {
     config.protections.forEach((protection) => {
@@ -124,6 +136,8 @@ function ensureGuild(guildId) {
       soundboard: [],
       maxSoundDuration: 15, // Padrão: 15 segundos
       soundboardVolume: 40, // Padrão: 40%
+      narradorSayUser: false, // Padrão: não fala nome do usuário
+      commandLogs: null, // Padrão: sem logs de comandos
     });
   } else {
     // Migra config existente se necessário
@@ -426,4 +440,141 @@ export function setSoundboardVolume(guildId, volume) {
   saveConfigs();
 
   return { success: true };
+}
+
+/**
+ * Obtém se o narrador deve falar o nome do usuário antes da mensagem
+ * @param {string} guildId - ID do servidor
+ * @returns {boolean} true se deve falar nome do usuário
+ */
+export function getNarradorSayUser(guildId) {
+  const guild = ensureGuild(guildId);
+  return guild.narradorSayUser || false;
+}
+
+/**
+ * Define se o narrador deve falar o nome do usuário antes da mensagem
+ * @param {string} guildId - ID do servidor
+ * @param {boolean} enabled - true para falar nome do usuário
+ * @returns {boolean} true se foi atualizado
+ */
+export function setNarradorSayUser(guildId, enabled) {
+  const guild = ensureGuild(guildId);
+  const wasChanged = guild.narradorSayUser !== enabled;
+  guild.narradorSayUser = enabled === true;
+  if (wasChanged) {
+    saveConfigs();
+  }
+  return wasChanged;
+}
+
+/**
+ * Obtém configuração de logs de comandos
+ * @param {string} guildId - ID do servidor
+ * @returns {Object|null} { channelId: string, commands: string[]|null } ou null se não configurado
+ */
+export function getCommandLogs(guildId) {
+  const guild = ensureGuild(guildId);
+  return guild.commandLogs || null;
+}
+
+/**
+ * Define logs de comandos (geral ou por comando específico)
+ * @param {string} guildId - ID do servidor
+ * @param {string} channelId - ID do canal de logs
+ * @param {string[]|null} commands - Array de nomes de comandos ou null para logs gerais
+ * @returns {Object} { success: boolean, replaced: boolean, error?: string }
+ */
+export function setCommandLogs(guildId, channelId, commands = null) {
+  const guild = ensureGuild(guildId);
+  
+  const hadLogs = guild.commandLogs !== null;
+  const wasGeneral = hadLogs && guild.commandLogs.commands === null;
+  
+  // Se commands é null, é log geral - substitui qualquer log específico
+  if (commands === null) {
+    guild.commandLogs = {
+      channelId,
+      commands: null, // Log geral
+    };
+    saveConfigs();
+    return {
+      success: true,
+      replaced: hadLogs, // Sempre substitui quando é geral
+    };
+  }
+  
+  // Se commands é array, é log por comando específico
+  const commandsArray = Array.isArray(commands) ? commands : [commands];
+  
+  // Se já tinha log geral, substitui pelo específico
+  // Se já tinha log específico, adiciona os novos comandos (sem duplicatas)
+  if (wasGeneral) {
+    // Substitui geral por específico
+    guild.commandLogs = {
+      channelId,
+      commands: [...new Set(commandsArray)], // Remove duplicatas
+    };
+  } else if (hadLogs && guild.commandLogs.channelId === channelId) {
+    // Mesmo canal: adiciona comandos à lista existente (sem duplicatas)
+    const existingCommands = guild.commandLogs.commands || [];
+    guild.commandLogs.commands = [...new Set([...existingCommands, ...commandsArray])];
+  } else {
+    // Novo canal ou não tinha logs: cria nova configuração
+    guild.commandLogs = {
+      channelId,
+      commands: [...new Set(commandsArray)],
+    };
+  }
+  
+  saveConfigs();
+  
+  return {
+    success: true,
+    replaced: wasGeneral, // Só substituiu se tinha log geral antes
+  };
+}
+
+/**
+ * Remove logs de comandos (geral ou de um comando específico)
+ * @param {string} guildId - ID do servidor
+ * @param {string|null} commandName - Nome do comando para remover log específico, ou null para remover log geral
+ * @returns {boolean} true se removeu algo
+ */
+export function removeCommandLogs(guildId, commandName = null) {
+  const guild = ensureGuild(guildId);
+  
+  if (!guild.commandLogs) {
+    return false; // Não tinha logs configurados
+  }
+  
+  if (commandName === null) {
+    // Remove log geral
+    if (guild.commandLogs.commands === null) {
+      guild.commandLogs = null;
+      saveConfigs();
+      return true;
+    }
+    return false; // Não tinha log geral
+  }
+  
+  // Remove log de comando específico
+  if (guild.commandLogs.commands === null) {
+    return false; // É log geral, não tem comando específico para remover
+  }
+  
+  const index = guild.commandLogs.commands.indexOf(commandName);
+  if (index === -1) {
+    return false; // Comando não estava na lista
+  }
+  
+  guild.commandLogs.commands.splice(index, 1);
+  
+  // Se não sobrou nenhum comando, remove a configuração inteira
+  if (guild.commandLogs.commands.length === 0) {
+    guild.commandLogs = null;
+  }
+  
+  saveConfigs();
+  return true;
 }
