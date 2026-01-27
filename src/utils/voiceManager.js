@@ -8,6 +8,7 @@ import {
   AudioPlayerStatus,
 } from "@discordjs/voice";
 import { generateAudio, cleanupAudio } from "./tts.js";
+import { getSoundboardVolume } from "../state/guildConfigs.js";
 import fs from "fs";
 
 // Armazena conexões e players por guild
@@ -285,4 +286,73 @@ export function getCurrentChannel(guildId) {
  */
 export function isPlayingAudio(guildId) {
   return isPlaying.get(guildId) || false;
+}
+
+/**
+ * Reproduz um arquivo de áudio diretamente
+ * @param {string} guildId - ID do servidor
+ * @param {string} filePath - Caminho do arquivo de áudio
+ * @param {number|null} volumePercent - Volume em porcentagem (1-100, opcional, usa configuração do servidor se não fornecido)
+ * @returns {Promise<void>}
+ */
+export async function playSoundFile(guildId, filePath, volumePercent = null) {
+  const connection = getVoiceConnection(guildId);
+  if (!connection) {
+    throw new Error("Bot não está conectado a um canal de voz");
+  }
+
+  const player = players.get(guildId);
+  if (!player) {
+    throw new Error("Player de áudio não encontrado");
+  }
+
+  // Se já está reproduzindo, aguarda terminar
+  if (isPlaying.get(guildId)) {
+    await new Promise((resolve) => {
+      const checkIdle = () => {
+        if (player.state.status === AudioPlayerStatus.Idle) {
+          player.off(AudioPlayerStatus.Idle, checkIdle);
+          resolve();
+        }
+      };
+      player.on(AudioPlayerStatus.Idle, checkIdle);
+    });
+  }
+
+  if (!fs.existsSync(filePath)) {
+    throw new Error(`Arquivo de áudio não encontrado: ${filePath}`);
+  }
+
+  try {
+    isPlaying.set(guildId, true);
+
+    // Cria recurso de áudio
+    const resource = createAudioResource(filePath, {
+      inlineVolume: true,
+    });
+
+    // Aplica volume (converte de porcentagem para decimal: 60% = 0.6)
+    // Se volumePercent não fornecido, usa configuração do servidor
+    const volume = volumePercent !== null 
+      ? volumePercent / 100 
+      : getSoundboardVolume(guildId) / 100;
+    resource.volume.setVolume(volume);
+
+    // Reproduz
+    player.play(resource);
+
+    // Aguarda terminar
+    await new Promise((resolve) => {
+      const onIdle = () => {
+        player.off(AudioPlayerStatus.Idle, onIdle);
+        resolve();
+      };
+      player.on(AudioPlayerStatus.Idle, onIdle);
+    });
+
+    isPlaying.set(guildId, false);
+  } catch (error) {
+    isPlaying.set(guildId, false);
+    throw error;
+  }
 }

@@ -39,7 +39,7 @@ function loadConfigs() {
 }
 
 // Salva configurações no arquivo
-function saveConfigs() {
+export function saveConfigs() {
   try {
     const dir = path.dirname(CONFIG_FILE);
     if (!fs.existsSync(dir)) {
@@ -63,6 +63,7 @@ function ensureUser(userId) {
   if (!userConfigs.has(userId)) {
     userConfigs.set(userId, {
       language: DEFAULT_LANGUAGE,
+      maxSoundDuration: null, // null = sem limite (apenas para owner)
     });
   }
   return userConfigs.get(userId);
@@ -101,4 +102,35 @@ export function setUserLanguage(userId, language) {
  */
 export function getUserConfig(userId) {
   return ensureUser(userId);
+}
+
+/**
+ * Obtém a duração máxima de áudio configurada para o usuário (owner)
+ * @param {string} userId - ID do usuário
+ * @returns {number|null} Duração máxima em segundos ou null se não configurado (sem limite)
+ */
+export function getUserMaxSoundDuration(userId) {
+  const user = ensureUser(userId);
+  return user.maxSoundDuration || null;
+}
+
+/**
+ * Define a duração máxima de áudio para o usuário (owner)
+ * @param {string} userId - ID do usuário
+ * @param {number|null} duration - Duração máxima em segundos (1 ou mais) ou null para remover limite
+ * @returns {Object} { success: boolean, error?: string }
+ */
+export function setUserMaxSoundDuration(userId, duration) {
+  if (duration !== null && (typeof duration !== "number" || duration < 1)) {
+    return {
+      success: false,
+      error: "Duração deve ser um número maior que 0 ou null para remover limite.",
+    };
+  }
+
+  const user = ensureUser(userId);
+  user.maxSoundDuration = duration;
+  saveConfigs();
+
+  return { success: true };
 }

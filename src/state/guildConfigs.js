@@ -20,6 +20,24 @@ function migrateConfig(config) {
     needsSave = true;
   }
 
+  // Garante que tem soundboard
+  if (config.soundboard === undefined) {
+    config.soundboard = [];
+    needsSave = true;
+  }
+
+  // Garante que tem maxSoundDuration (padrão 15 segundos)
+  if (config.maxSoundDuration === undefined) {
+    config.maxSoundDuration = 15;
+    needsSave = true;
+  }
+
+  // Garante que tem soundboardVolume (padrão 60%)
+  if (config.soundboardVolume === undefined) {
+    config.soundboardVolume = 60;
+    needsSave = true;
+  }
+
   // Migra proteções antigas para incluir stats e mode
   if (config.protections && Array.isArray(config.protections)) {
     config.protections.forEach((protection) => {
@@ -78,7 +96,7 @@ function loadConfigs() {
 }
 
 // Salva configurações no arquivo
-function saveConfigs() {
+export function saveConfigs() {
   try {
     const dir = path.dirname(CONFIG_FILE);
     if (!fs.existsSync(dir)) {
@@ -103,6 +121,9 @@ function ensureGuild(guildId) {
     guildConfigs.set(guildId, {
       logChannelId: null,
       protections: [],
+      soundboard: [],
+      maxSoundDuration: 15, // Padrão: 15 segundos
+      soundboardVolume: 60, // Padrão: 60%
     });
   } else {
     // Migra config existente se necessário
@@ -342,4 +363,68 @@ export function removeLogChannel(guildId) {
 export function getLogChannel(guildId) {
   const guild = ensureGuild(guildId);
   return guild.logChannelId || null;
+}
+
+/**
+ * Obtém a duração máxima de áudio configurada para o servidor
+ * @param {string} guildId - ID do servidor
+ * @returns {number} Duração máxima em segundos (padrão: 15, máximo: 60)
+ */
+export function getMaxSoundDuration(guildId) {
+  const guild = ensureGuild(guildId);
+  const duration = guild.maxSoundDuration || 15;
+  // Limita a 60 segundos para admins
+  return Math.min(duration, 60);
+}
+
+/**
+ * Define a duração máxima de áudio para o servidor
+ * @param {string} guildId - ID do servidor
+ * @param {number} duration - Duração máxima em segundos (1-60)
+ * @returns {Object} { success: boolean, error?: string }
+ */
+export function setMaxSoundDuration(guildId, duration) {
+  if (typeof duration !== "number" || duration < 1 || duration > 60) {
+    return {
+      success: false,
+      error: "Duração deve ser um número entre 1 e 60 segundos.",
+    };
+  }
+
+  const guild = ensureGuild(guildId);
+  guild.maxSoundDuration = duration;
+  saveConfigs();
+
+  return { success: true };
+}
+
+/**
+ * Obtém o volume do soundboard configurado para o servidor
+ * @param {string} guildId - ID do servidor
+ * @returns {number} Volume em porcentagem (1-100, padrão: 60)
+ */
+export function getSoundboardVolume(guildId) {
+  const guild = ensureGuild(guildId);
+  return guild.soundboardVolume || 60;
+}
+
+/**
+ * Define o volume do soundboard para o servidor
+ * @param {string} guildId - ID do servidor
+ * @param {number} volume - Volume em porcentagem (1-100)
+ * @returns {Object} { success: boolean, error?: string }
+ */
+export function setSoundboardVolume(guildId, volume) {
+  if (typeof volume !== "number" || volume < 1 || volume > 100) {
+    return {
+      success: false,
+      error: "Volume deve ser um número entre 1 e 100.",
+    };
+  }
+
+  const guild = ensureGuild(guildId);
+  guild.soundboardVolume = volume;
+  saveConfigs();
+
+  return { success: true };
 }
