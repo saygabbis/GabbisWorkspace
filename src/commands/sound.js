@@ -71,8 +71,15 @@ export default {
         )
         .addIntegerOption((opt) =>
           opt
-            .setName("comprimento")
-            .setDescription("Duração máxima a reproduzir (em ms, opcional)")
+            .setName("in")
+            .setDescription("Ponto de início do áudio em milissegundos (opcional)")
+            .setRequired(false)
+            .setMinValue(0)
+        )
+        .addIntegerOption((opt) =>
+          opt
+            .setName("out")
+            .setDescription("Duração máxima a reproduzir em milissegundos (opcional)")
             .setRequired(false)
             .setMinValue(1)
         )
@@ -163,7 +170,8 @@ export default {
         const emoji = interaction.options.getString("emoji");
         const attachment = interaction.options.getAttachment("arquivo");
         const link = interaction.options.getString("link");
-        const comprimentoMs = interaction.options.getInteger("comprimento");
+        const inMs = interaction.options.getInteger("in");
+        const outMs = interaction.options.getInteger("out");
 
         // Validação: precisa ter arquivo ou link
         if (!attachment && !link) {
@@ -226,18 +234,34 @@ export default {
           maxDuration = Math.min(serverMaxDuration, 15);
         }
 
-        // Se o usuário informou comprimento em ms, respeita o menor entre o limite e o comprimento
-        if (comprimentoMs !== null) {
-          const comprimentoSegundos = comprimentoMs / 1000;
-          if (comprimentoSegundos > maxDuration) {
+        // Valida e processa parâmetros in e out
+        let startTimeSeconds = null;
+        let maxDurationSeconds = maxDuration;
+
+        if (inMs !== null) {
+          startTimeSeconds = inMs / 1000;
+          if (startTimeSeconds < 0) {
             return interaction.editReply(
-              `❌ O comprimento solicitado (${comprimentoSegundos.toFixed(
+              "❌ O ponto de início (in) não pode ser negativo."
+            );
+          }
+        }
+
+        if (outMs !== null) {
+          const outSeconds = outMs / 1000;
+          if (outSeconds > maxDuration) {
+            return interaction.editReply(
+              `❌ A duração solicitada (${outSeconds.toFixed(
                 2
               )}s) ultrapassa o limite permitido de ${maxDuration}s.`
             );
           }
+          maxDurationSeconds = Math.min(maxDuration, outSeconds);
+        }
 
-          maxDuration = Math.min(maxDuration, comprimentoSegundos);
+        // Se in foi fornecido mas out não, ainda precisa respeitar o limite máximo
+        if (inMs !== null && outMs === null) {
+          maxDurationSeconds = maxDuration;
         }
 
         try {
@@ -267,7 +291,8 @@ export default {
             guildId,
             tempInputPath,
             soundId,
-            maxDuration
+            maxDurationSeconds,
+            startTimeSeconds
           );
 
           // Remove arquivo temporário
@@ -302,8 +327,21 @@ export default {
 
           const newIndex = getSoundCount(guildId);
 
+          // Monta mensagem com informações de in/out se aplicável
+          let durationInfo = `Duração: ${duration.toFixed(1)}s`;
+          if (inMs !== null || outMs !== null) {
+            const parts = [];
+            if (inMs !== null) {
+              parts.push(`in: ${(inMs / 1000).toFixed(2)}s`);
+            }
+            if (outMs !== null) {
+              parts.push(`out: ${(outMs / 1000).toFixed(2)}s`);
+            }
+            durationInfo += ` (${parts.join(", ")})`;
+          }
+
           return interaction.editReply(
-            `✅ Som "${nome}" adicionado com sucesso como **#${newIndex}**! (Duração: ${duration.toFixed(1)}s)`
+            `✅ Som "${nome}" adicionado com sucesso como **#${newIndex}**! (${durationInfo})`
           );
         } catch (error) {
           console.error("Erro ao adicionar som:", error);

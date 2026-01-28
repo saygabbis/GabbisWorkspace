@@ -185,8 +185,6 @@ export default {
       }
 
       if (subcommand === "info") {
-        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
         const userId = interaction.user.id;
         const language = getUserLanguage(userId);
         const languageName = SUPPORTED_LANGUAGES.find(l => l.value === language)?.name || language;

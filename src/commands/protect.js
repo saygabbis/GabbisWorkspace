@@ -500,6 +500,8 @@ export default {
             // ignora
           }
         });
+        
+        return; // Retorna após configurar o collector para evitar mensagem de erro
       }
 
       if (sub === "stats") {
