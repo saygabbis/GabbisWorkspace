@@ -3,6 +3,8 @@ import "dotenv/config";
 export const ENV = {
   DISCORD_TOKEN: process.env.DISCORD_TOKEN,
   OWNER_IDS: process.env.OWNER_IDS || "",
+  PANEL_PORT: Number(process.env.PANEL_PORT) || 3000,
+  PANEL_TOKEN: process.env.PANEL_TOKEN || "",
 };
 
 // validação básica

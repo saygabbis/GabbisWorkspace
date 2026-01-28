@@ -331,7 +331,7 @@ Sistema inteligente de cooldown que aumenta progressivamente:
 npm install -g pm2
 ```
 
-2. **Inicie o bot com PM2:**
+2. **Inicie o bot + API com PM2:**
 ```bash
 pm2 start src/index.js --name gabbis-bot
 ```
@@ -350,6 +350,12 @@ pm2 stop gabbis-bot      # Parar
 pm2 status               # Status
 pm2 monit                # Monitoramento em tempo real
 ```
+
+> **Nota:** o mesmo processo `gabbis-bot` agora:
+> - conecta no Discord (bot)
+> - e expõe a API HTTP do painel em `http://localhost:$PANEL_PORT` (padrão: `3000`).
+> Certifique-se de configurar `PANEL_TOKEN` no `.env` e usar esse token no painel
+> via header `Authorization: Bearer SEU_TOKEN`.
 
 ### Usando systemd (Alternativa)
 

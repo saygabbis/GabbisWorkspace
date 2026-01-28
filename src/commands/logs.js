@@ -70,8 +70,6 @@ export default {
 
   async execute(interaction) {
     try {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
       const subcommand = interaction.options.getSubcommand();
       const guildId = interaction.guild.id;
       const userId = interaction.user.id;
@@ -80,6 +78,13 @@ export default {
       const isUserAdmin = interaction.member.permissions.has(
         PermissionFlagsBits.Administrator
       );
+
+      // /logs view deve ser público; os demais subcomandos podem ser ephemerais
+      if (subcommand === "view") {
+        await interaction.deferReply(); // resposta pública
+      } else {
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      }
 
       if (!isUserOwner && !isUserAdmin) {
         return interaction.editReply(
@@ -200,9 +205,6 @@ export default {
       }
 
       if (subcommand === "view") {
-        // View deve ser público para permitir visualização
-        await interaction.deferReply();
-
         const commandLogs = getCommandLogs(guildId);
 
         const embed = new EmbedBuilder()
