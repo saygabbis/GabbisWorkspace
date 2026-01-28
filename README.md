@@ -26,11 +26,19 @@ Bot multifuncional para Discord com sistema avançado de proteção de voz, blac
 - **Múltiplos idiomas**: Suporte a 9 idiomas diferentes
 - **Configuração por usuário**: Cada usuário pode escolher seu idioma preferido
 - **Limite de caracteres**: Máximo de 500 caracteres por mensagem
+- **Opcional**: Falar (ou não) o nome de quem enviou a mensagem antes do texto narrado
 
 ### 📊 Estatísticas e Logs
 - **Estatísticas detalhadas**: Acompanhe ativações e desconexões
-- **Sistema de logs**: Canal configurável para logs de proteção
-- **Logs de segurança**: Registro de tentativas de bypass e interferência
+- **Sistema de logs**: Canal configurável para logs de comandos e/ou eventos de proteção
+- **Logs de segurança**: Registro de tentativas de bypass e interferência (protection)
+
+### 🎵 Soundboard por Servidor
+- **Soundboard por guild**: Lista de sons separada por servidor
+- **Adicionar por arquivo ou link**: Upload (attachment) ou URL
+- **Processamento automático**: Normalização/recorte por duração máxima
+- **Controles**: Listagem paginada com botões e reprodução rápida
+- **Configurações por servidor**: Duração máxima e volume
 
 ## 📋 Pré-requisitos
 
@@ -43,6 +51,7 @@ Bot multifuncional para Discord com sistema avançado de proteção de voz, blac
 
 - **discord.js** ^14.25.1 - Biblioteca principal do Discord
 - **@discordjs/voice** ^0.19.0 - Sistema de voz do Discord
+- **@snazzah/davey** ^0.1.9 - Utilitários auxiliares de áudio/voz
 - **google-tts-api** ^2.0.2 - Geração de Text-to-Speech
 - **opusscript** ^0.0.8 - Codec de áudio Opus
 - **ffmpeg-static** ^5.3.0 - FFmpeg para processamento de áudio
@@ -94,6 +103,9 @@ Adiciona uma proteção para um usuário.
   - `persistent`: Proteção contínua
 - `cooldown` (opcional): Janela de proteção em segundos (1-10, padrão: 2, apenas para modo Instant)
 
+**Notas:**
+- No modo `persistent`, o `cooldown` é ignorado (bloqueio contínuo enquanto o target estiver na call).
+
 **Exemplo:**
 ```
 /protect add target:@Amiga trigger:@BotSom modo:instant cooldown:3
@@ -114,17 +126,13 @@ Edita uma proteção existente.
 - `cooldown` (opcional): Novo cooldown em segundos
 
 #### `/protect list`
-Lista todas as proteções ativas no servidor com estatísticas.
+Lista todas as proteções do servidor (com paginação).
+- `target` (opcional): Filtrar por usuário protegido
+- `trigger` (opcional): Filtrar por usuário que dispara a proteção
+- `modo` (opcional): Filtrar por modo (`instant`/`persistent`)
 
 #### `/protect stats`
 Mostra estatísticas detalhadas das proteções do servidor, incluindo top 5 proteções mais ativadas.
-
-#### `/protect logs add`
-Define o canal onde os logs de proteção aparecerão.
-- `channel` (obrigatório): Canal de texto para logs
-
-#### `/protect logs remove`
-Remove o canal de logs configurado.
 
 ---
 
@@ -154,6 +162,15 @@ Remove usuário ou comandos da blacklist.
 #### `/blacklist list`
 Lista todos os usuários e comandos bloqueados no servidor, formatado de forma clara.
 
+#### `/blacklist check`
+Verifica se um usuário e/ou comando está bloqueado.
+- `user` (opcional): Usuário a verificar
+- `command` (opcional): Comando a verificar
+
+**Notas:**
+- Você pode passar só `user`, só `command`, ou ambos.
+- Para bloquear comandos, o bot valida se o comando existe (baseado nos comandos disponíveis em `src/commands/`).
+
 **Proteções:**
 - Owners configurados no `.env` não podem ser bloqueados
 - O próprio bot não pode ser bloqueado
@@ -163,12 +180,6 @@ Lista todos os usuários e comandos bloqueados no servidor, formatado de forma c
 
 ### 🎙️ Comandos de Narração (`/narrador`)
 **✅ Disponível para todos os usuários (exceto blacklist)**
-
-#### `/narrador join`
-Faz o bot entrar no canal de voz atual do usuário.
-
-#### `/narrador leave`
-Faz o bot sair do canal de voz atual.
 
 #### `/narrador language`
 Define o idioma de narração do usuário.
@@ -189,9 +200,85 @@ Define o idioma de narração do usuário.
 Narra uma mensagem de texto no canal de voz.
 - `texto` (obrigatório): Texto a ser narrado (máximo: 500 caracteres)
 
-**Nota:** O bot precisa estar conectado ao canal de voz (use `/narrador join` primeiro).
+**Nota:** O bot precisa estar conectado ao canal de voz (use `/join` primeiro, se necessário).
+
+#### `/narrador toggle`
+Ativa/desativa se o narrador fala o nome de quem enviou a mensagem antes do texto.
+- `user` (obrigatório): `on` (ativado) / `off` (desativado)
+
+#### `/narrador info`
+Mostra as configurações atuais do narrador (seu idioma e se “falar nome” está ativo).
 
 ---
+
+### 🎵 Soundboard (`/sound`)
+**✅ Disponível para todos os usuários (exceto blacklist)**  
+Algumas configurações avançadas exigem **Administrador** ou **Owner do bot**.
+
+#### `/sound add`
+Adiciona um som ao soundboard do servidor.
+- `nome` (obrigatório): Nome do som (até 50 caracteres)
+- `emoji` (obrigatório): Emoji para o som
+- `arquivo` (opcional): Attachment de áudio
+- `link` (opcional): URL de áudio
+- `comprimento` (opcional): Duração máxima a reproduzir (em ms)
+
+**Notas:**
+- Você precisa fornecer **`arquivo` OU `link`**.
+- Formatos aceitos: MP3, WAV, M4A, FLAC, AAC, OGG, WMA, OPUS, WEBM
+- Para usuários comuns, o bot limita automaticamente a duração máxima (ex.: até 15s, respeitando o limite do servidor).
+
+#### `/sound remove`
+Remove um som do soundboard.
+- `nome` (opcional): Nome do som (autocomplete)
+- `numero` (opcional): Número do som na lista (1, 2, 3...)
+
+#### `/sound play`
+Reproduz um som do soundboard (o bot entra automaticamente no canal de voz do usuário).
+- `nome` (opcional): Nome do som (autocomplete)
+- `numero` (opcional): Número do som na lista (1, 2, 3...)
+
+#### `/sound list`
+Lista os sons do servidor com paginação e botões para tocar (o botão só responde para quem executou o comando).
+
+#### `/sound stop`
+Para a reprodução atual do soundboard.
+
+#### `/sound settings`
+Mostra ou ajusta configurações do soundboard.
+- `duracao` (opcional): Duração máxima em segundos (**admin/owner**; admins têm limite máximo)
+- `volume` (opcional): Volume (1-200; acima de 100% exige **admin/owner**)
+- `clear` (opcional): Remove **todos** os áudios do servidor (**admin/owner**, com confirmação)
+
+---
+
+### 🧾 Logs (`/logs`)
+**⚠️ Requer Administrador ou Owner do bot**
+
+#### `/logs add`
+Configura um canal para logs.
+- `channel` (obrigatório): Canal de texto para enviar logs
+- `type` (opcional): `commands`, `protection` ou `all` (padrão: `commands`)
+- `command` (opcional): Comando específico para logar (somente quando `type=commands`)
+
+#### `/logs remove`
+Remove configuração de logs.
+- `type` (opcional): `commands`, `protection` ou `all`
+- `command` (opcional): Remove log de um comando específico (somente para `type=commands`)
+
+#### `/logs view`
+Mostra a configuração atual de logs do servidor.
+
+---
+
+### 🔊 Voz (`/join` e `/leave`)
+**✅ Disponível para todos os usuários (exceto blacklist)**
+
+#### `/join`
+Faz o bot entrar no canal de voz em que você está.
+
+#### `/leave`
+Faz o bot sair do canal de voz atual (se estiver conectado).
 
 ## 🛡️ Sistema de Proteção Anti-Violação
 
@@ -306,19 +393,25 @@ GabbisWorkspace/
 ├── src/
 │   ├── commands/            # Comandos slash
 │   │   ├── blacklist.js     # Sistema de blacklist
+│   │   ├── join.js          # Faz o bot entrar no canal de voz
+│   │   ├── leave.js         # Faz o bot sair do canal de voz
+│   │   ├── logs.js          # Configuração de logs (comandos/proteção)
 │   │   ├── narrador.js      # Comando de narração TTS
-│   │   └── protect.js       # Comando de proteção
+│   │   ├── protect.js       # Comando de proteção
+│   │   └── sound.js         # Soundboard por servidor
 │   ├── events/              # Eventos do Discord
 │   │   ├── interactionCreate.js  # Handler de comandos
 │   │   └── voiceState.js        # Handler de eventos de voz
 │   ├── state/               # Gerenciamento de estado
 │   │   ├── blacklist.js     # Gerenciamento de blacklist
 │   │   ├── guildConfigs.js  # Configurações por servidor
+│   │   ├── soundboard.js    # Estado do soundboard por servidor
 │   │   ├── userConfigs.js   # Configurações por usuário
 │   │   ├── voiceProtection.js # Rate limiting e cooldown
 │   │   └── voiceState.js    # Estado de conexões de voz
 │   ├── utils/               # Utilitários
 │   │   ├── logger.js        # Sistema de logs avançado
+│   │   ├── soundboardManager.js # Download/processamento/arquivos do soundboard
 │   │   ├── stats.js         # Estatísticas
 │   │   ├── tts.js           # Geração de áudio TTS
 │   │   └── voiceManager.js  # Gerenciamento de conexões de voz
@@ -344,11 +437,15 @@ O bot precisa das seguintes permissões no servidor:
 - ✅ **Falar** (para reproduzir áudio TTS)
 - ✅ **Desconectar Membros** (para desconectar triggers em proteções)
 - ✅ **Usar Comandos de Aplicação** (para comandos slash)
+- ✅ **Ver Canal / Enviar Mensagens / Incorporar Links** (para enviar embeds de logs no canal configurado)
 
 ### Permissões de Comandos
 - **`/protect`**: Requer permissão de **Administrador**
 - **`/blacklist`**: Requer permissão de **Administrador**
 - **`/narrador`**: Disponível para **todos os usuários** (exceto blacklist)
+- **`/sound`**: Disponível para **todos os usuários** (exceto blacklist); ajustes avançados em `settings` exigem **Administrador/Owner**
+- **`/logs`**: Requer **Administrador** ou **Owner do bot**
+- **`/join`** e **`/leave`**: Disponível para **todos os usuários** (exceto blacklist)
 
 ### Segurança
 - 🔐 Nunca commite o arquivo `.env` no Git
@@ -386,11 +483,22 @@ O bot precisa das seguintes permissões no servidor:
 - ✅ Use `/blacklist list` para verificar entradas
 
 ### Narrador não funciona
-- ✅ Certifique-se de estar em um canal de voz antes de usar `/narrador join`
+- ✅ Certifique-se de estar em um canal de voz antes de usar `/join`
 - ✅ Verifique se o bot tem permissão para entrar e falar no canal
 - ✅ Se o áudio não toca, verifique se o `opusscript` foi instalado corretamente
 - ✅ Textos muito longos são divididos automaticamente
 - ✅ Verifique se você não está na blacklist
+
+### Soundboard não funciona
+- ✅ Certifique-se de estar em um canal de voz antes de usar `/sound play` ou os botões do `/sound list`
+- ✅ Verifique se o bot tem permissão para entrar e falar no canal
+- ✅ Se falhar ao adicionar, confirme o formato do áudio (MP3/WAV/M4A/FLAC/AAC/OGG/WMA/OPUS/WEBM)
+- ✅ Se o som estiver sendo cortado, veja a duração máxima em `/sound settings`
+
+### Logs não aparecem
+- ✅ Configure com `/logs add channel:#seu-canal type:all` (ou `commands`/`protection`)
+- ✅ Verifique se o bot tem permissão no canal (Ver Canal, Enviar Mensagens, Incorporar Links)
+- ✅ Use `/logs view` para confirmar o canal e o tipo configurados
 
 ### Erro ao instalar dependências
 - ✅ Se `@discordjs/opus` falhar, não se preocupe - o `opusscript` é instalado automaticamente
@@ -422,6 +530,7 @@ O bot precisa das seguintes permissões no servidor:
 - 🚨 **Interferência Externa**: Quando o bot é desconectado por outro bot
 - ✅ **Recuperação Automática**: Quando o bot reconecta e retoma proteções
 - 🚫 **Blacklist**: Quando usuários/comandos são bloqueados
+- 🧾 **Comandos**: Execução de comandos slash (quando `type=commands` ou `type=all`)
 
 ---
 
@@ -449,7 +558,6 @@ O bot precisa das seguintes permissões no servidor:
 ## 📄 Licença
 
 ISC
-
 ---
 
 ## 🤝 Contribuindo
@@ -469,7 +577,11 @@ Contribuições são bem-vindas! Sinta-se à vontade para abrir issues ou pull r
 - ✅ Validação de integridade
 - ✅ Logging aprimorado
 - ✅ Otimizações de performance
+- ✅ Sistema de logs por comando e/ou proteção (`/logs`)
+- ✅ Soundboard por servidor (`/sound`)
+- ✅ Comandos globais de voz (`/join` e `/leave`)
 
 ---
 
 **Desenvolvido com ❤️ para proteção e diversão no Discord**
+
