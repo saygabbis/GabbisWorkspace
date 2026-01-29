@@ -24,7 +24,7 @@ import {
   deleteAllSoundFiles,
   getSoundFilePath,
 } from "../utils/soundboardManager.js";
-import { getMaxSoundDuration, setMaxSoundDuration, getSoundboardVolume, setSoundboardVolume } from "../state/guildConfigs.js";
+import { getMaxSoundDuration, setMaxSoundDuration, getSoundboardVolume, setSoundboardVolume, getSoundListButtonTimeout, setSoundListButtonTimeout } from "../state/guildConfigs.js";
 import { isOwner } from "../config/env.js";
 import fs from "fs";
 import path from "path";
@@ -154,6 +154,13 @@ export default {
             .setName("clear")
             .setDescription("Limpar todos os áudios (apenas admin)")
             .setRequired(false)
+        )
+        .addIntegerOption((opt) =>
+          opt
+            .setName("timeout")
+            .setDescription("Timeout dos botões da lista em segundos (30+ ou 0 para ilimitado)")
+            .setRequired(false)
+            .setMinValue(0)
         ),
     ),
 
@@ -560,9 +567,11 @@ export default {
           if (row1.components.length > 0) rows.push(row1);
           if (row2.components.length > 0) rows.push(row2);
 
-          // Row de navegação
+          // Row de navegação e stop
+          const navRow = new ActionRowBuilder();
+          
           if (totalPages > 1) {
-            const navRow = new ActionRowBuilder().addComponents(
+            navRow.addComponents(
               new ButtonBuilder()
                 .setCustomId("sound_list_prev")
                 .setStyle(ButtonStyle.Primary)
@@ -574,8 +583,18 @@ export default {
                 .setEmoji("➡️")
                 .setDisabled(page === totalPages - 1)
             );
-            rows.push(navRow);
           }
+          
+          // Botão de stop sempre visível
+          navRow.addComponents(
+            new ButtonBuilder()
+              .setCustomId("sound_list_stop")
+              .setStyle(ButtonStyle.Danger)
+              .setEmoji("⏹️")
+              .setLabel("Parar")
+          );
+          
+          rows.push(navRow);
 
           return rows;
         };
@@ -589,9 +608,12 @@ export default {
         const filter = (i) =>
           i.user.id === userId && i.message.id === message.id;
 
+        // Obtém timeout configurado (em milissegundos, null = ilimitado)
+        const buttonTimeout = getSoundListButtonTimeout(guildId);
+        
         const collector = message.createMessageComponentCollector({
           filter,
-          time: 60000, // 1 minuto
+          time: buttonTimeout, // null = ilimitado, número = timeout em ms
         });
 
         collector.on("collect", async (interactionComponent) => {
@@ -610,6 +632,103 @@ export default {
               embeds: [newEmbed],
               components: newComponents,
             });
+            return;
+          }
+
+          if (customId === "sound_list_stop") {
+            try {
+              // Verifica se a interação ainda é válida antes de responder
+              if (interactionComponent.deferred || interactionComponent.replied) {
+                return; // Já foi respondida, ignora
+              }
+
+              // Verifica se usuário está em canal de voz ANTES de defer
+              const member = interaction.guild.members.cache.get(interactionComponent.user.id);
+              if (!member?.voice.channel) {
+                // Resposta rápida sem defer para evitar timeout
+                try {
+                  await interactionComponent.reply({
+                    content: "❌ Você precisa estar em um canal de voz para usar o stop.",
+                    ephemeral: true,
+                  });
+                } catch (replyError) {
+                  // Se falhar, tenta defer + edit
+                  if (!replyError.message.includes("Unknown interaction")) {
+                    console.error("Erro ao responder stop (sem voz):", replyError);
+                  }
+                }
+                return;
+              }
+
+              // Verifica se há algo tocando ANTES de defer
+              if (!isPlayingAudio(guildId)) {
+                try {
+                  await interactionComponent.reply({
+                    content: "ℹ️ Nenhum áudio está sendo reproduzido no momento.",
+                    ephemeral: true,
+                  });
+                } catch (replyError) {
+                  if (!replyError.message.includes("Unknown interaction")) {
+                    console.error("Erro ao responder stop (sem áudio):", replyError);
+                  }
+                }
+                return;
+              }
+
+              // Se chegou aqui, há áudio tocando - pode fazer defer
+              try {
+                await interactionComponent.deferReply({ ephemeral: true });
+              } catch (deferError) {
+                // Se defer falhar (interação expirada), tenta resposta direta
+                if (deferError.code === 10062 || deferError.message?.includes("Unknown interaction")) {
+                  // Interação expirou, não faz nada
+                  return;
+                }
+                throw deferError; // Re-lança outros erros
+              }
+
+              const stopped = stopSound(guildId);
+
+              if (!stopped) {
+                await interactionComponent.editReply({
+                  content: "❌ Não consegui parar o áudio atual (nenhum player ativo encontrado).",
+                });
+                return;
+              }
+
+              await interactionComponent.editReply({
+                content: "⏹️ Reprodução do soundboard parada com sucesso.",
+              });
+            } catch (error) {
+              // Ignora erros de interação expirada
+              if (error.code === 10062 || error.message?.includes("Unknown interaction")) {
+                return; // Interação expirou, ignora silenciosamente
+              }
+              
+              console.error(
+                `[SOUNDBOARD] Stop Error from List(Button) | Guild: ${guildId} | User: ${interactionComponent.user.id}:`,
+                error
+              );
+              
+              // Tenta responder apenas se a interação ainda for válida
+              try {
+                if (!interactionComponent.deferred && !interactionComponent.replied) {
+                  await interactionComponent.reply({
+                    content: `❌ Erro ao parar áudio: ${error.message}`,
+                    ephemeral: true,
+                  });
+                } else {
+                  await interactionComponent.editReply({
+                    content: `❌ Erro ao parar áudio: ${error.message}`,
+                  });
+                }
+              } catch (replyError) {
+                // Se não for possível responder, ignora (interação provavelmente expirou)
+                if (!replyError.message?.includes("Unknown interaction")) {
+                  console.error("Erro ao responder erro de stop:", replyError);
+                }
+              }
+            }
             return;
           }
 
@@ -705,16 +824,20 @@ export default {
         const duracao = interaction.options.getInteger("duracao");
         const volume = interaction.options.getInteger("volume");
         const clear = interaction.options.getBoolean("clear");
+        const timeout = interaction.options.getInteger("timeout");
 
         const isUserOwner = isOwner(userId);
         const isUserAdmin = interaction.member.permissions.has(PermissionFlagsBits.Administrator);
 
         // Se nenhuma opção fornecida, mostra embed com configurações
-        if (duracao === null && volume === null && clear === null) {
+        if (duracao === null && volume === null && clear === null && timeout === null) {
           const sounds = getSounds(guildId);
           const count = getSoundCount(guildId);
           const maxDuration = getMaxSoundDuration(guildId);
           const currentVolume = getSoundboardVolume(guildId);
+          const buttonTimeoutMs = getSoundListButtonTimeout(guildId);
+          const buttonTimeoutSeconds = buttonTimeoutMs === null ? null : buttonTimeoutMs / 1000; // Converte ms para segundos
+          const buttonTimeoutDisplay = buttonTimeoutSeconds === null ? "Ilimitado" : `${buttonTimeoutSeconds}s`;
 
           const embed = new EmbedBuilder()
             .setTitle("⚙️ Configurações do Soundboard")
@@ -729,6 +852,11 @@ export default {
               {
                 name: "🔊 Volume",
                 value: `${currentVolume}%`,
+                inline: true,
+              },
+              {
+                name: "⏱️ Timeout dos Botões",
+                value: buttonTimeoutDisplay,
                 inline: true,
               },
               {
@@ -876,6 +1004,38 @@ export default {
           );
           return interaction.editReply(
             `✅ Volume do soundboard configurado para **${volume}%**.`
+          );
+        }
+
+        if (timeout !== null) {
+          // Configurar timeout dos botões da lista
+          if (!isUserOwner && !isUserAdmin) {
+            return interaction.editReply(
+              "❌ Você precisa ser **administrador** ou **owner do bot** para configurar o timeout dos botões."
+            );
+          }
+
+          // 0 = ilimitado, >= 30 = timeout em segundos
+          const timeoutValue = timeout === 0 ? null : timeout;
+          
+          if (timeoutValue !== null && timeoutValue < 30) {
+            return interaction.editReply(
+              "❌ Timeout mínimo é **30 segundos**. Use **0** para ilimitado."
+            );
+          }
+
+          const result = setSoundListButtonTimeout(guildId, timeoutValue);
+          if (!result.success) {
+            return interaction.editReply(`❌ ${result.error}`);
+          }
+
+          const timeoutDisplay = timeoutValue === null ? "ilimitado" : `${timeoutValue} segundos`;
+          console.log(
+            `[SOUNDBOARD] Set Button Timeout | Guild: ${guildId} | User: ${userId} | Timeout: ${timeoutDisplay}`
+          );
+          return interaction.editReply(
+            `✅ Timeout dos botões da lista configurado para **${timeoutDisplay}**.\n` +
+              `📌 Os botões do \`/sound list\` agora ficarão disponíveis por ${timeoutDisplay === "ilimitado" ? "tempo ilimitado" : timeoutDisplay}.`
           );
         }
       }

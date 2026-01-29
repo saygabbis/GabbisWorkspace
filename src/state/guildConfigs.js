@@ -38,6 +38,12 @@ function migrateConfig(config) {
     needsSave = true;
   }
 
+  // Garante que tem soundListButtonTimeout (padrão 300 segundos = 5 minutos, null = ilimitado)
+  if (config.soundListButtonTimeout === undefined) {
+    config.soundListButtonTimeout = 300; // 5 minutos padrão
+    needsSave = true;
+  }
+
   // Garante que tem narradorSayUser (padrão false)
   if (config.narradorSayUser === undefined) {
     config.narradorSayUser = false;
@@ -173,6 +179,7 @@ function ensureGuild(guildId) {
       soundboard: [],
       maxSoundDuration: 15, // Padrão: 15 segundos
       soundboardVolume: 40, // Padrão: 40%
+      soundListButtonTimeout: 300, // Padrão: 300 segundos (5 minutos), null = ilimitado
       narradorSayUser: false, // Padrão: não fala nome do usuário
       commandLogs: null, // Padrão: sem logs de comandos
     });
@@ -598,6 +605,42 @@ export function setCommandLogs(guildId, channelId, commands = null, type = 'comm
     success: true,
     replaced: wasGeneral && existingType === 'commands', // Só substituiu se tinha log geral antes
   };
+}
+
+/**
+ * Obtém o timeout dos botões da lista de sons (em milissegundos)
+ * @param {string} guildId - ID do servidor
+ * @returns {number|null} Timeout em milissegundos (null = ilimitado, padrão: 300000 = 5 minutos)
+ */
+export function getSoundListButtonTimeout(guildId) {
+  const guild = ensureGuild(guildId);
+  const timeoutSeconds = guild.soundListButtonTimeout;
+  if (timeoutSeconds === null) {
+    return null; // Ilimitado
+  }
+  // Converte segundos para milissegundos
+  return (timeoutSeconds || 300) * 1000;
+}
+
+/**
+ * Define o timeout dos botões da lista de sons
+ * @param {string} guildId - ID do servidor
+ * @param {number|null} timeoutSeconds - Timeout em segundos (null = ilimitado, mínimo: 30 segundos)
+ * @returns {Object} { success: boolean, error?: string }
+ */
+export function setSoundListButtonTimeout(guildId, timeoutSeconds) {
+  if (timeoutSeconds !== null && (typeof timeoutSeconds !== "number" || timeoutSeconds < 30)) {
+    return {
+      success: false,
+      error: "Timeout deve ser null (ilimitado) ou um número maior ou igual a 30 segundos.",
+    };
+  }
+
+  const guild = ensureGuild(guildId);
+  guild.soundListButtonTimeout = timeoutSeconds;
+  saveConfigs();
+
+  return { success: true };
 }
 
 /**
