@@ -211,39 +211,56 @@ export function saveGuildConfig(guildId, config) {
 
 /**
  * Adiciona uma proteção target -> trigger
+ * @param {string} guildId
+ * @param {string} targetId
+ * @param {string} triggerId
+ * @param {number} [timeWindow=2000]
+ * @param {string} [mode="instant"]
+ * @param {string|null} [channelId=null] - Obrigatório quando mode === "channel" (canal de voz protegido)
  */
 export function addProtection(
   guildId,
   targetId,
   triggerId,
   timeWindow = 2000,
-  mode = "instant"
+  mode = "instant",
+  channelId = null
 ) {
   const guild = ensureGuild(guildId);
 
-  // Validação: verifica duplicata considerando target + trigger + mode
+  // channelId obrigatório quando mode === "channel"
+  if (mode === "channel" && !channelId) {
+    return false; // channelId é obrigatório para modo channel
+  }
+
+  // Validação: verifica duplicata considerando target + trigger + mode (e channelId para channel)
   const exists = guild.protections.some(
     (p) =>
       p.targetId === targetId &&
       p.triggerId === triggerId &&
-      p.mode === mode
+      p.mode === mode &&
+      (mode !== "channel" || p.channelId === channelId)
   );
 
   if (exists) {
-    return false; // já existe (mesma combinação de target + trigger + mode)
+    return false; // já existe (mesma combinação de target + trigger + mode [+ channel])
   }
 
-  guild.protections.push({
+  const protectionData = {
     targetId,
     triggerId,
-    timeWindow,
+    timeWindow: mode === "channel" ? 0 : timeWindow,
     mode,
     stats: {
       activationCount: 0,
       lastActivatedAt: null,
       totalDisconnects: 0,
     },
-  });
+  };
+  if (mode === "channel") {
+    protectionData.channelId = channelId;
+  }
+  guild.protections.push(protectionData);
 
   saveConfigs(); // Salva após adicionar
   return true;
@@ -251,23 +268,23 @@ export function addProtection(
 
 /**
  * Remove uma proteção
- * Se mode for fornecido, remove apenas a proteção do modo especificado
+ * Se mode for fornecido, remove apenas a proteção do modo especificado (para channel, channelId é obrigatório)
  * Se mode não for fornecido, remove todas as proteções com target + trigger (compatibilidade)
  */
-export function removeProtection(guildId, targetId, triggerId, mode = null) {
+export function removeProtection(guildId, targetId, triggerId, mode = null, channelId = null) {
   const guild = ensureGuild(guildId);
 
   const before = guild.protections.length;
 
   if (mode !== null) {
-    // Remove apenas a proteção do modo especificado
+    // Remove apenas a proteção do modo especificado (para channel, filtra por channelId)
     guild.protections = guild.protections.filter(
-      (p) =>
-        !(
-          p.targetId === targetId &&
-          p.triggerId === triggerId &&
-          p.mode === mode
-        )
+      (p) => {
+        if (p.targetId !== targetId || p.triggerId !== triggerId || p.mode !== mode) return true;
+        if (mode === "channel" && channelId != null) return p.channelId !== channelId;
+        if (mode === "channel") return false; // remove qualquer channel se channelId não foi passado
+        return false;
+      }
     );
   } else {
     // Remove todas as proteções com target + trigger (comportamento antigo para compatibilidade)
@@ -297,16 +314,18 @@ export function updateProtection(
   triggerId,
   currentMode,
   newMode = null,
-  newTimeWindow = null
+  newTimeWindow = null,
+  currentChannelId = null
 ) {
   const guild = ensureGuild(guildId);
 
-  // Encontra a proteção específica
+  // Encontra a proteção específica (para channel, filtra por channelId)
   const protection = guild.protections.find(
     (p) =>
       p.targetId === targetId &&
       p.triggerId === triggerId &&
-      p.mode === currentMode
+      p.mode === currentMode &&
+      (currentMode !== "channel" || p.channelId === currentChannelId)
   );
 
   if (!protection) {
@@ -321,27 +340,30 @@ export function updateProtection(
 
   // Atualiza modo se fornecido
   if (newMode !== null && newMode !== protection.mode) {
-    // Se mudando para persistent, timeWindow deve ser 0
-    if (newMode === "persistent") {
+    // Se mudando para persistent ou channel, timeWindow deve ser 0
+    if (newMode === "persistent" || newMode === "channel") {
       protection.timeWindow = 0;
     } else if (newMode === "instant") {
       // Se mudando para instant e timeWindow não fornecido, usar padrão ou manter atual se já for instant
       if (newTimeWindow === null) {
         protection.timeWindow = protection.mode === "instant" 
           ? protection.timeWindow 
-          : 2000; // Padrão se mudando de persistent para instant
+          : 2000; // Padrão se mudando de persistent/channel para instant
       }
     }
     protection.mode = newMode;
+    if (newMode !== "channel" && protection.channelId !== undefined) {
+      delete protection.channelId;
+    }
   }
 
   // Atualiza timeWindow se fornecido (apenas para modo instant)
   if (newTimeWindow !== null) {
-    if (protection.mode === "persistent") {
-      // Não permite cooldown em modo persistent
+    if (protection.mode === "persistent" || protection.mode === "channel") {
+      // Não permite cooldown em modo persistent ou channel
       return { 
         success: false, 
-        error: "Modo Persistent não aceita cooldown" 
+        error: "Modo Persistent e Channel não aceitam cooldown" 
       };
     }
     protection.timeWindow = newTimeWindow * 1000; // Converte segundos para ms
@@ -389,6 +411,17 @@ export function getProtectionsForTarget(guildId, targetId) {
 
   return guild.protections.filter(
     (p) => p.targetId === targetId
+  );
+}
+
+/**
+ * Retorna proteções do tipo "channel" para um canal de voz específico.
+ * Usado quando alguém entra no canal: verificar se é target de alguma proteção channel desse canal.
+ */
+export function getProtectionsForChannel(guildId, channelId) {
+  const guild = ensureGuild(guildId);
+  return guild.protections.filter(
+    (p) => p.mode === "channel" && p.channelId === channelId
   );
 }
 

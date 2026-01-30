@@ -1,5 +1,6 @@
 import { SlashCommandBuilder, MessageFlags, EmbedBuilder } from "discord.js";
-import { connectToChannel, playTTS, isPlayingAudio } from "../utils/voiceManager.js";
+import { connectToChannel, playTTS, isPlayingAudio, getCurrentChannel } from "../utils/voiceManager.js";
+import { isOwner } from "../config/env.js";
 import { getUserLanguage, setUserLanguage } from "../state/userConfigs.js";
 import { getNarradorSayUser } from "../state/guildConfigs.js";
 
@@ -97,19 +98,27 @@ export default {
         const userId = interaction.user.id;
         const member = interaction.member;
 
-        // Verifica se o usuário está em um canal de voz
-        if (!member.voice?.channel) {
-          return interaction.editReply(
-            "❌ Você precisa estar em um canal de voz para usar este comando."
-          );
-        }
-
-        // Verifica se o bot pode se conectar ao canal
-        const channel = member.voice.channel;
-        if (!channel.joinable) {
-          return interaction.editReply(
-            "❌ Não tenho permissão para entrar neste canal de voz."
-          );
+        // Canal de voz: usuário em call OU owner usando canal onde o bot já está
+        let channel = member.voice?.channel;
+        if (!channel) {
+          if (!isOwner(interaction.user.id)) {
+            return interaction.editReply(
+              "❌ Você precisa estar em um canal de voz para usar este comando."
+            );
+          }
+          const currentChannelId = getCurrentChannel(guildId);
+          if (!currentChannelId) {
+            return interaction.editReply(
+              "❌ O bot não está em nenhum canal. Use /join primeiro ou entre em um canal."
+            );
+          }
+          // Owner: bot já está em um canal, não precisa conectar
+        } else {
+          if (!channel.joinable) {
+            return interaction.editReply(
+              "❌ Não tenho permissão para entrar neste canal de voz."
+            );
+          }
         }
 
         // Verifica se já está reproduzindo
@@ -119,14 +128,16 @@ export default {
           );
         }
 
-        // Auto-connect: conecta ao canal do usuário
-        try {
-          await connectToChannel(channel);
-        } catch (error) {
-          console.error("Erro ao conectar ao canal:", error);
-          return interaction.editReply(
-            `❌ Erro ao entrar no canal de voz: ${error.message}`
-          );
+        // Conecta ao canal do usuário (owner sem call: bot já conectado)
+        if (channel) {
+          try {
+            await connectToChannel(channel);
+          } catch (error) {
+            console.error("Erro ao conectar ao canal:", error);
+            return interaction.editReply(
+              `❌ Erro ao entrar no canal de voz: ${error.message}`
+            );
+          }
         }
 
         // Busca idioma do usuário

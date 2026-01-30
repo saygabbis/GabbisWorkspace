@@ -1,5 +1,6 @@
 import {
   getProtectionsForTarget,
+  getProtectionsForChannel,
 } from "../state/guildConfigs.js";
 import { recordActivation, recordDisconnect } from "../utils/stats.js";
 import { logProtectionActivation, logTargetEntered, logWarn, logError, logExternalInterference, logRecovery } from "../utils/logger.js";
@@ -589,7 +590,49 @@ import { isConnected, getCurrentChannel, onUnexpectedDisconnect, clearUnexpected
       newState.channelId === null;
 
     // ===============================
-    // 1️⃣ TARGET entrou ou trocou de call
+    // 0️⃣ MODO CHANNEL: target não pode entrar no canal enquanto trigger estiver nele (apenas esse canal)
+    // ===============================
+    if (movedChannel) {
+      const targetChannelId = newState.channelId;
+      const channelProtections = getProtectionsForChannel(guildId, targetChannelId);
+
+      for (const p of channelProtections) {
+        if (p.targetId !== member.id) continue;
+
+        // Trigger está neste canal? Se sim, target não pode entrar — desconecta (anti-spam: sempre remove)
+        const triggerMember = await guild.members.fetch(p.triggerId).catch(() => null);
+        if (!triggerMember || triggerMember.voice.channelId !== targetChannelId) continue;
+
+        const hasPermission = await canDisconnectMember(guild, targetChannelId);
+        if (!hasPermission) {
+          logWarn(`Bot não tem permissão para desconectar target (channel mode) no canal ${targetChannelId}`);
+          continue;
+        }
+
+        await newState.disconnect().catch(err => {
+          logError(`Erro ao desconectar target (channel mode) ${member.user.tag}:`, err);
+        });
+
+        recordDisconnect(guildId, p.targetId, p.triggerId);
+        recordActivation(guildId, p.targetId, p.triggerId);
+
+        const channel = await guild.channels.fetch(targetChannelId).catch(() => ({ id: targetChannelId }));
+        await logProtectionActivation(
+          guild.client,
+          guildId,
+          member.user,
+          triggerMember.user,
+          channel,
+          0, // Channel: sem timeWindow, sempre remove (anti-spam)
+          1,
+          "channel" // Para o log exibir "Channel (canal específico)" em vez de "Persistent (contínuo)"
+        );
+        return; // Já processou: target foi removido do canal
+      }
+    }
+
+    // ===============================
+    // 1️⃣ TARGET entrou ou trocou de call (modos Instant / Persistent)
     // ===============================
     if (movedChannel) {
       // Validação de integridade: verifica se target ainda existe no servidor
@@ -601,7 +644,7 @@ import { isConnected, getCurrentChannel, onUnexpectedDisconnect, clearUnexpected
       const protections = getProtectionsForTarget(
         guildId,
         member.id
-      );
+      ).filter((p) => p.mode !== "channel"); // Channel é tratado acima; aqui só Instant/Persistent
 
       if (protections.length > 0) {
         const targetChannelId = newState.channelId;

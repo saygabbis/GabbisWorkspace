@@ -1,4 +1,4 @@
-import { SlashCommandBuilder, PermissionFlagsBits, MessageFlags, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from "discord.js";
+import { SlashCommandBuilder, PermissionFlagsBits, MessageFlags, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType } from "discord.js";
 import { 
   addProtection, 
   removeProtection, 
@@ -35,8 +35,16 @@ export default {
             .setRequired(false)
             .addChoices(
               { name: "Instant (padrão)", value: "instant" },
-              { name: "Persistent", value: "persistent" }
+              { name: "Persistent", value: "persistent" },
+              { name: "Channel (apenas um canal)", value: "channel" }
             )
+        )
+        .addChannelOption(opt =>
+          opt
+            .setName("canal")
+            .setDescription("Canal de voz protegido (obrigatório no modo Channel)")
+            .setRequired(false)
+            .addChannelTypes(ChannelType.GuildVoice)
         )
         .addIntegerOption(opt =>
           opt
@@ -70,8 +78,16 @@ export default {
             .setRequired(false)
             .addChoices(
               { name: "Instant", value: "instant" },
-              { name: "Persistent", value: "persistent" }
+              { name: "Persistent", value: "persistent" },
+              { name: "Channel", value: "channel" }
             )
+        )
+        .addChannelOption(opt =>
+          opt
+            .setName("canal")
+            .setDescription("Canal de voz (obrigatório ao remover proteção Channel)")
+            .setRequired(false)
+            .addChannelTypes(ChannelType.GuildVoice)
         )
     )
     .addSubcommand(sub =>
@@ -97,8 +113,16 @@ export default {
             .setRequired(false)
             .addChoices(
               { name: "Instant", value: "instant" },
-              { name: "Persistent", value: "persistent" }
+              { name: "Persistent", value: "persistent" },
+              { name: "Channel", value: "channel" }
             )
+        )
+        .addChannelOption(opt =>
+          opt
+            .setName("canal-atual")
+            .setDescription("Canal da proteção (obrigatório se modo atual for Channel)")
+            .setRequired(false)
+            .addChannelTypes(ChannelType.GuildVoice)
         )
         .addStringOption(opt =>
           opt
@@ -107,7 +131,8 @@ export default {
             .setRequired(false)
             .addChoices(
               { name: "Instant", value: "instant" },
-              { name: "Persistent", value: "persistent" }
+              { name: "Persistent", value: "persistent" },
+              { name: "Channel", value: "channel" }
             )
         )
         .addIntegerOption(opt =>
@@ -142,7 +167,8 @@ export default {
             .setRequired(false)
             .addChoices(
               { name: "Instant", value: "instant" },
-              { name: "Persistent", value: "persistent" }
+              { name: "Persistent", value: "persistent" },
+              { name: "Channel", value: "channel" }
             )
         )
     )
@@ -174,38 +200,54 @@ export default {
         const target = interaction.options.getUser("target");
         const trigger = interaction.options.getUser("trigger");
         const mode = interaction.options.getString("modo") || "instant";
+        const channelOpt = interaction.options.getChannel("canal");
         const cooldownSeconds = interaction.options.getInteger("cooldown");
 
-        // Validação: modo Persistent não deve ter cooldown
-        if (mode === "persistent" && cooldownSeconds !== null) {
+        // Validação: modo Channel exige canal de voz
+        if (mode === "channel") {
+          if (!channelOpt || !channelOpt.isVoiceBased?.()) {
+            return interaction.editReply(
+              "⚠️ No modo **Channel** é obrigatório informar o **canal de voz** que será protegido. O target não poderá entrar nesse canal enquanto o trigger estiver nele."
+            );
+          }
+        }
+
+        // Validação: modo Persistent/Channel não devem ter cooldown
+        if ((mode === "persistent" || mode === "channel") && cooldownSeconds !== null) {
           return interaction.editReply(
-            "⚠️ O modo Persistent não usa cooldown. O trigger será bloqueado enquanto o target estiver na call."
+            mode === "channel"
+              ? "⚠️ O modo Channel não usa cooldown. O target será removido sempre que tentar entrar naquele canal enquanto o trigger estiver lá (anti-spam)."
+              : "⚠️ O modo Persistent não usa cooldown. O trigger será bloqueado enquanto o target estiver na call."
           );
         }
 
         // Converte cooldown em milissegundos (padrão 2s = 2000ms)
         const timeWindow = cooldownSeconds ? cooldownSeconds * 1000 : 2000;
+        const channelId = mode === "channel" ? channelOpt.id : null;
 
         const success = addProtection(
           interaction.guild.id,
           target.id,
           trigger.id,
           timeWindow,
-          mode
+          mode,
+          channelId
         );
 
         if (!success) {
           return interaction.editReply(
-            "⚠️ Essa proteção já existe. Não é possível criar a mesma proteção (target + trigger + modo) duas vezes."
+            "⚠️ Essa proteção já existe. Não é possível criar a mesma proteção (target + trigger + modo [+ canal]) duas vezes."
           );
         }
 
-        const modeText = mode === "persistent" ? "Persistent" : "Instant";
+        const modeText = mode === "persistent" ? "Persistent" : mode === "channel" ? "Channel" : "Instant";
         const cooldownText = mode === "instant" ? ` (cooldown: ${timeWindow}ms)` : "";
+        const channelText = mode === "channel" ? ` • Canal: **${channelOpt.name}**` : "";
 
         return interaction.editReply(
-          `✅ Proteção criada: **${target.username}** protegido de **${trigger.username}**\n` +
-          `Modo: **${modeText}**${cooldownText}`
+          (mode === "channel"
+            ? `✅ Proteção criada: **${target.username}** não poderá entrar no canal **${channelOpt.name}** enquanto **${trigger.username}** estiver nele. Modo: **${modeText}** (só esse canal; outras calls liberadas).`
+            : `✅ Proteção criada: **${target.username}** protegido de **${trigger.username}**\nModo: **${modeText}**${cooldownText}`)
         );
       }
 
@@ -213,20 +255,26 @@ export default {
         const target = interaction.options.getUser("target");
         const trigger = interaction.options.getUser("trigger");
         const mode = interaction.options.getString("modo");
+        const channelOpt = interaction.options.getChannel("canal");
 
-        // Se modo não foi especificado, remove todas as proteções com target + trigger (compatibilidade)
-        // Se modo foi especificado, remove apenas a proteção do modo especificado
+        // Modo Channel exige canal para identificar qual proteção remover (ou remove todas channel desse target+trigger)
+        const channelId = (mode === "channel" && channelOpt?.isVoiceBased) ? channelOpt.id : null;
+
         const success = removeProtection(
           interaction.guild.id,
           target.id,
           trigger.id,
-          mode || null
+          mode || null,
+          channelId
         );
 
         if (!success) {
           if (mode) {
+            const modeLabel = mode === "persistent" ? "Persistent" : mode === "channel" ? "Channel" : "Instant";
             return interaction.editReply(
-              `⚠️ Proteção não encontrada: **${target.username}** protegido de **${trigger.username}** no modo **${mode === "persistent" ? "Persistent" : "Instant"}**.`
+              mode === "channel" && !channelId
+                ? "⚠️ Para remover proteção **Channel**, informe o **canal** ou remova sem filtrar por modo para apagar todas as proteções desse target+trigger."
+                : `⚠️ Proteção não encontrada: **${target.username}** / **${trigger.username}** no modo **${modeLabel}**${mode === "channel" && channelId ? ` (canal informado)` : ""}.`
             );
           } else {
             return interaction.editReply(
@@ -235,9 +283,9 @@ export default {
           }
         }
 
-        const modeText = mode ? ` no modo **${mode === "persistent" ? "Persistent" : "Instant"}**` : "";
+        const modeText = mode ? ` no modo **${mode === "persistent" ? "Persistent" : mode === "channel" ? "Channel" : "Instant"}**${mode === "channel" && channelOpt ? ` (canal ${channelOpt.name})` : ""}` : "";
         return interaction.editReply(
-          `✅ Proteção removida: **${target.username}** protegido de **${trigger.username}**${modeText}`
+          `✅ Proteção removida: **${target.username}** / **${trigger.username}**${modeText}`
         );
       }
 
@@ -245,24 +293,33 @@ export default {
         const target = interaction.options.getUser("target");
         const trigger = interaction.options.getUser("trigger");
         const currentMode = interaction.options.getString("modo-atual");
+        const currentChannelOpt = interaction.options.getChannel("canal-atual");
         const newMode = interaction.options.getString("modo");
         const cooldownSeconds = interaction.options.getInteger("cooldown");
 
         // Identifica a proteção
         let protectionToEdit = null;
-        
+        const currentChannelId = (currentMode === "channel" && currentChannelOpt?.isVoiceBased) ? currentChannelOpt.id : null;
+
         if (currentMode) {
-          // Modo atual fornecido - busca proteção específica
+          // Modo atual fornecido - busca proteção específica (para channel, exige canal)
           const protections = getProtectionsByTargetAndTrigger(
             interaction.guild.id,
             target.id,
             trigger.id
           );
-          protectionToEdit = protections.find(p => p.mode === currentMode);
+          protectionToEdit = protections.find(p => {
+            if (p.mode !== currentMode) return false;
+            if (currentMode === "channel") return p.channelId === currentChannelId;
+            return true;
+          });
           
           if (!protectionToEdit) {
+            const modeLabel = currentMode === "persistent" ? "Persistent" : currentMode === "channel" ? "Channel" : "Instant";
             return interaction.editReply(
-              `⚠️ Proteção não encontrada: **${target.username}** protegido de **${trigger.username}** no modo **${currentMode === "persistent" ? "Persistent" : "Instant"}**.`
+              currentMode === "channel" && !currentChannelId
+                ? "⚠️ Para editar proteção **Channel**, informe o **canal-atual**."
+                : `⚠️ Proteção não encontrada: **${target.username}** / **${trigger.username}** no modo **${modeLabel}**.`
             );
           }
         } else {
@@ -281,18 +338,25 @@ export default {
           
           if (protections.length > 1) {
             return interaction.editReply(
-              `⚠️ Existem múltiplas proteções para **${target.username}** e **${trigger.username}** (Instant e Persistent).\n` +
-              `Por favor, especifique o modo atual usando a opção \`modo-atual\`.`
+              `⚠️ Existem múltiplas proteções para **${target.username}** e **${trigger.username}** (Instant, Persistent ou Channel).\n` +
+              `Por favor, especifique \`modo-atual\` (e \`canal-atual\` se for Channel).`
             );
           }
           
           protectionToEdit = protections[0];
         }
 
-        // Validação: se modo novo for persistent, não pode ter cooldown
-        if (newMode === "persistent" && cooldownSeconds !== null) {
+        // Validação: modo Persistent/Channel não aceitam cooldown
+        if ((newMode === "persistent" || newMode === "channel") && cooldownSeconds !== null) {
           return interaction.editReply(
-            "⚠️ O modo Persistent não usa cooldown. O trigger será bloqueado enquanto o target estiver na call."
+            "⚠️ Os modos Persistent e Channel não usam cooldown."
+          );
+        }
+
+        // Não permitir mudar para Channel via edit (é preciso adicionar nova proteção com canal)
+        if (newMode === "channel") {
+          return interaction.editReply(
+            "⚠️ Para criar proteção no modo Channel, use `/protect add` com modo Channel e o canal desejado."
           );
         }
 
@@ -300,14 +364,15 @@ export default {
         const finalNewMode = newMode !== null ? newMode : protectionToEdit.mode;
         const finalNewTimeWindow = cooldownSeconds !== null ? cooldownSeconds : null;
 
-        // Atualiza a proteção
+        // Atualiza a proteção (para channel, passa currentChannelId)
         const result = updateProtection(
           interaction.guild.id,
           target.id,
           trigger.id,
           protectionToEdit.mode,
           finalNewMode,
-          finalNewTimeWindow
+          finalNewTimeWindow,
+          protectionToEdit.mode === "channel" ? protectionToEdit.channelId : null
         );
 
         if (!result) {
@@ -323,8 +388,8 @@ export default {
         }
 
         // Monta mensagem de sucesso
-        const oldModeText = result.oldValues.mode === "persistent" ? "Persistent" : "Instant";
-        const newModeText = result.newValues.mode === "persistent" ? "Persistent" : "Instant";
+        const oldModeText = result.oldValues.mode === "persistent" ? "Persistent" : result.oldValues.mode === "channel" ? "Channel" : "Instant";
+        const newModeText = result.newValues.mode === "persistent" ? "Persistent" : result.newValues.mode === "channel" ? "Channel" : "Instant";
         const oldCooldownText = result.oldValues.mode === "instant" 
           ? ` (cooldown: ${result.oldValues.timeWindow}ms)` 
           : "";
@@ -403,23 +468,29 @@ export default {
                 const stats = p.stats || {};
                 const activationCount = stats.activationCount || 0;
                 const mode = p.mode || "instant";
-                const modeText = mode === "persistent" ? "Persistent" : "Instant";
-                const timeWindowText = mode === "persistent" ? "contínuo" : `${p.timeWindow}ms`;
+                const modeText = mode === "persistent" ? "Persistent" : mode === "channel" ? "Channel" : "Instant";
+                const timeWindowText = mode === "persistent" ? "contínuo" : mode === "channel" ? "canal específico" : `${p.timeWindow}ms`;
+                let channelName = "";
+                if (mode === "channel" && p.channelId) {
+                  const ch = await interaction.guild.channels.fetch(p.channelId).catch(() => null);
+                  channelName = ch ? ` • #${ch.name}` : ` • ${p.channelId}`;
+                }
                 const statsText = activationCount > 0 
                   ? ` • ${activationCount} ativação(ões)`
                   : "";
-                return `${globalIndex + 1}. **${target.username}** protegido de **${trigger.username}** [${modeText}] (${timeWindowText})${statsText}`;
+                const desc = mode === "channel"
+                  ? `**${target.username}** não pode entrar no canal enquanto **${trigger.username}** estiver`
+                  : `**${target.username}** protegido de **${trigger.username}**`;
+                return `${globalIndex + 1}. ${desc} [${modeText}] (${timeWindowText})${channelName}${statsText}`;
               } catch (err) {
-                // Fallback se não conseguir buscar o usuário
                 const stats = p.stats || {};
                 const activationCount = stats.activationCount || 0;
                 const mode = p.mode || "instant";
-                const modeText = mode === "persistent" ? "Persistent" : "Instant";
-                const timeWindowText = mode === "persistent" ? "contínuo" : `${p.timeWindow}ms`;
-                const statsText = activationCount > 0 
-                  ? ` • ${activationCount} ativação(ões)`
-                  : "";
-                return `${globalIndex + 1}. <@!${p.targetId}> protegido de <@!${p.triggerId}> [${modeText}] (${timeWindowText})${statsText}`;
+                const modeText = mode === "persistent" ? "Persistent" : mode === "channel" ? "Channel" : "Instant";
+                const timeWindowText = mode === "persistent" ? "contínuo" : mode === "channel" ? "canal específico" : `${p.timeWindow}ms`;
+                const channelName = mode === "channel" && p.channelId ? ` • #${p.channelId}` : "";
+                const statsText = activationCount > 0 ? ` • ${activationCount} ativação(ões)` : "";
+                return `${globalIndex + 1}. <@!${p.targetId}> / <@!${p.triggerId}> [${modeText}] (${timeWindowText})${channelName}${statsText}`;
               }
             })
           );

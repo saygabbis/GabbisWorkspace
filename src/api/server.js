@@ -153,15 +153,19 @@ export function startApiServer(client) {
 
   app.post("/guilds/:guildId/protections", (req, res) => {
     const { guildId } = req.params;
-    const { targetId, triggerId, mode = "instant", cooldownSeconds } = req.body || {};
+    const { targetId, triggerId, mode = "instant", cooldownSeconds, channelId } = req.body || {};
 
     if (!targetId || !triggerId) {
       return res.status(400).json({ ok: false, error: "targetId e triggerId são obrigatórios." });
     }
 
+    if (mode === "channel" && !channelId) {
+      return res.status(400).json({ ok: false, error: "channelId é obrigatório quando mode é 'channel'." });
+    }
+
     try {
       let timeWindowMs = 2000;
-      if (typeof cooldownSeconds === "number") {
+      if (mode !== "channel" && mode !== "persistent" && typeof cooldownSeconds === "number") {
         if (cooldownSeconds < 1 || cooldownSeconds > 10) {
           return res.status(400).json({
             ok: false,
@@ -171,11 +175,11 @@ export function startApiServer(client) {
         timeWindowMs = cooldownSeconds * 1000;
       }
 
-      const success = addProtection(guildId, targetId, triggerId, timeWindowMs, mode);
+      const success = addProtection(guildId, targetId, triggerId, timeWindowMs, mode, mode === "channel" ? channelId : null);
       if (!success) {
         return res.status(409).json({
           ok: false,
-          error: "Proteção já existe para este target/trigger/modo.",
+          error: "Proteção já existe para este target/trigger/modo (e canal, se channel).",
         });
       }
 
@@ -194,6 +198,7 @@ export function startApiServer(client) {
       currentMode,
       newMode = null,
       cooldownSeconds = null,
+      currentChannelId = null,
     } = req.body || {};
 
     if (!targetId || !triggerId || !currentMode) {
@@ -221,7 +226,8 @@ export function startApiServer(client) {
         triggerId,
         currentMode,
         newMode,
-        cooldown
+        cooldown,
+        currentMode === "channel" ? currentChannelId : null
       );
 
       if (!result) {
@@ -244,7 +250,7 @@ export function startApiServer(client) {
 
   app.delete("/guilds/:guildId/protections", (req, res) => {
     const { guildId } = req.params;
-    const { targetId, triggerId, mode = null } = req.body || {};
+    const { targetId, triggerId, mode = null, channelId = null } = req.body || {};
 
     if (!targetId || !triggerId) {
       return res.status(400).json({
@@ -254,7 +260,7 @@ export function startApiServer(client) {
     }
 
     try {
-      const removed = removeProtection(guildId, targetId, triggerId, mode);
+      const removed = removeProtection(guildId, targetId, triggerId, mode, mode === "channel" ? channelId : null);
       if (!removed) {
         return res.status(404).json({ ok: false, error: "Proteção não encontrada." });
       }

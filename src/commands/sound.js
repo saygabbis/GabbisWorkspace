@@ -5,6 +5,7 @@ import {
   playSoundFileImmediate,
   isPlayingAudio,
   stopSound,
+  getCurrentChannel,
 } from "../utils/voiceManager.js";
 import {
   addSound,
@@ -435,26 +436,32 @@ export default {
           }
         }
 
-        // Verifica se o usuário está em um canal de voz
+        // Verifica canal de voz: usuário em call OU owner usando canal onde o bot já está
         const member = interaction.member;
-        if (!member.voice.channel) {
-          return interaction.editReply(
-            "❌ Você precisa estar em um canal de voz para reproduzir um som."
-          );
-        }
-
-        // Verifica se o bot pode se conectar ao canal
-        const channel = member.voice.channel;
-        if (!channel.joinable) {
-          return interaction.editReply(
-            "❌ Não tenho permissão para entrar neste canal de voz."
-          );
+        let channel = member.voice.channel;
+        if (!channel) {
+          if (!isOwner(interaction.user.id)) {
+            return interaction.editReply(
+              "❌ Você precisa estar em um canal de voz para reproduzir um som."
+            );
+          }
+          const currentChannelId = getCurrentChannel(guildId);
+          if (!currentChannelId) {
+            return interaction.editReply(
+              "❌ O bot não está em nenhum canal. Use /join primeiro ou entre em um canal."
+            );
+          }
+          // Owner: bot já está em um canal, não precisa conectar de novo
+        } else {
+          if (!channel.joinable) {
+            return interaction.editReply(
+              "❌ Não tenho permissão para entrar neste canal de voz."
+            );
+          }
+          await connectToChannel(channel);
         }
 
         try {
-          // Auto-connect: sempre conecta ao canal do usuário
-          await connectToChannel(channel);
-
           // Obtém caminho do arquivo
           const filePath = getSoundFilePath(guildId, sound.id);
 
@@ -642,9 +649,10 @@ export default {
                 return; // Já foi respondida, ignora
               }
 
-              // Verifica se usuário está em canal de voz ANTES de defer
+              // Verifica se usuário está em canal de voz (owner pode usar sem estar em call se o bot já estiver)
               const member = interaction.guild.members.cache.get(interactionComponent.user.id);
-              if (!member?.voice.channel) {
+              const canUseStop = member?.voice.channel || (isOwner(interactionComponent.user.id) && getCurrentChannel(guildId));
+              if (!canUseStop) {
                 // Resposta rápida sem defer para evitar timeout
                 try {
                   await interactionComponent.reply({
@@ -750,25 +758,26 @@ export default {
               // Defer para evitar timeout de interação enquanto conecta/toca
               await interactionComponent.deferReply({ ephemeral: true });
 
-              // Verifica se usuário está em canal de voz
+              // Verifica canal de voz: usuário em call OU owner usando canal onde o bot já está
               const member = interaction.guild.members.cache.get(interactionComponent.user.id);
-              if (!member?.voice.channel) {
-                await interactionComponent.editReply({
-                  content: "❌ Você precisa estar em um canal de voz para reproduzir um som.",
-                });
-                return;
+              let channel = member?.voice.channel;
+              if (!channel) {
+                if (!isOwner(interactionComponent.user.id) || !getCurrentChannel(guildId)) {
+                  await interactionComponent.editReply({
+                    content: "❌ Você precisa estar em um canal de voz para reproduzir um som.",
+                  });
+                  return;
+                }
+                // Owner: bot já em um canal, não precisa conectar
+              } else {
+                if (!channel.joinable) {
+                  await interactionComponent.editReply({
+                    content: "❌ Não tenho permissão para entrar neste canal de voz.",
+                  });
+                  return;
+                }
+                await connectToChannel(channel);
               }
-
-              const channel = member.voice.channel;
-              if (!channel.joinable) {
-                await interactionComponent.editReply({
-                  content: "❌ Não tenho permissão para entrar neste canal de voz.",
-                });
-                return;
-              }
-
-              // Auto-connect
-              await connectToChannel(channel);
 
               const filePath = getSoundFilePath(guildId, sound.id);
               const fileExists = fs.existsSync(filePath);
@@ -1046,8 +1055,9 @@ export default {
         const guildId = interaction.guild.id;
         const member = interaction.member;
 
-        // Verifica se usuário está em canal de voz
-        if (!member.voice?.channel) {
+        // Verifica canal de voz (owner pode usar sem estar em call se o bot já estiver)
+        const canUseStop = member.voice?.channel || (isOwner(interaction.user.id) && getCurrentChannel(guildId));
+        if (!canUseStop) {
           return interaction.editReply(
             "❌ Você precisa estar em um canal de voz para usar o stop."
           );

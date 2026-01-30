@@ -156,6 +156,7 @@ export async function logCommand(client, guildId, commandName, user, options = n
 
 /**
  * Log de proteção ativada (console e Discord)
+ * @param {string} [mode] - "instant" | "persistent" | "channel" — quando informado, o log exibe o modo correto
  */
 export async function logProtectionActivation(
   client,
@@ -164,14 +165,17 @@ export async function logProtectionActivation(
   trigger,
   channel,
   timeWindow,
-  count = 1
+  count = 1,
+  mode = null
 ) {
   const countText = count > 1 ? ` (${count}x)` : "";
-  // Se timeWindow é 0, é modo Persistent
-  const isPersistent = timeWindow === 0;
-  const protectionText = isPersistent 
-    ? "modo Persistent" 
-    : `janela de proteção: ${formatDuration(timeWindow)}`;
+  // Usa mode quando informado; senão infere: timeWindow 0 = persistent, caso contrário = instant
+  const effectiveMode = mode ?? (timeWindow === 0 ? "persistent" : "instant");
+  const protectionText = effectiveMode === "channel"
+    ? "modo Channel (canal específico)"
+    : effectiveMode === "persistent"
+      ? "modo Persistent"
+      : `janela de proteção: ${formatDuration(timeWindow)}`;
   const message = `🚫 Trigger **${trigger.tag || trigger.username || trigger.id}** removido${countText} (${protectionText})`;
 
   // Log no console
@@ -218,8 +222,12 @@ export async function logProtectionActivation(
             inline: true,
           },
           {
-            name: isPersistent ? "🔄 Modo" : "⏱️ Janela de Proteção",
-            value: isPersistent ? "Persistent (contínuo)" : formatDuration(timeWindow),
+            name: effectiveMode !== "instant" ? "🔄 Modo" : "⏱️ Janela de Proteção",
+            value: effectiveMode === "channel"
+              ? "Channel (canal específico)"
+              : effectiveMode === "persistent"
+                ? "Persistent (contínuo)"
+                : formatDuration(timeWindow),
             inline: true,
           },
           {

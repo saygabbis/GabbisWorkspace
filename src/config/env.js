@@ -28,9 +28,11 @@ export function getOwnerIds() {
 }
 
 /**
- * Verifica se um usuário é owner
+ * Verifica se um usuário é owner (apenas IDs em OWNER_IDS no .env).
+ * Outros usuários não sabem que essa verificação existe.
  */
 export function isOwner(userId) {
+  if (userId == null) return false;
   const ownerIds = getOwnerIds();
-  return ownerIds.includes(userId);
+  return ownerIds.includes(String(userId));
 }
