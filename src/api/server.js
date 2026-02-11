@@ -1,13 +1,30 @@
 import express from "express";
 import cors from "cors";
+import jwt from "jsonwebtoken";
 import { ENV } from "../config/env.js";
 import { getGuildConfig, listProtections, addProtection, updateProtection, removeProtection, getMaxSoundDuration, setMaxSoundDuration, getSoundboardVolume, setSoundboardVolume, getNarradorSayUser, setNarradorSayUser, getCommandLogs, setCommandLogs, removeCommandLogs } from "../state/guildConfigs.js";
 import { listBlacklist, addUserBlacklist, removeUserBlacklist, addCommandBlacklist, removeCommandBlacklist, clearUserCommands } from "../state/blacklist.js";
 import { getSounds } from "../state/soundboard.js";
 import { getGuildStats } from "../utils/stats.js";
 
-// OBS: userConfigs é usado apenas para métricas simples (ex.: contagem), não para mutação via API nessa primeira versão
-import { getUserConfig } from "../state/userConfigs.js";
+const USER_GUILDS_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24h
+const userGuildsCache = new Map(); // userId -> { guildIds: string[], expiresAt: number }
+
+function canAccessGuild(req, guildId) {
+  if (!req.user) return false;
+  if (req.user.legacyAdmin) return true;
+  const allowed = userGuildsCache.get(req.user.userId);
+  if (!allowed || Date.now() > allowed.expiresAt) return false;
+  return allowed.guildIds.includes(guildId);
+}
+
+function getAllowedGuildIds(req) {
+  if (!req.user) return [];
+  if (req.user.legacyAdmin) return null; // null = all
+  const allowed = userGuildsCache.get(req.user.userId);
+  if (!allowed || Date.now() > allowed.expiresAt) return [];
+  return allowed.guildIds;
+}
 
 /**
  * Cria e inicia o servidor HTTP da API do painel.
@@ -37,7 +54,7 @@ export function startApiServer(client) {
 
   // --- Autenticação ---
 
-  // Login simples: valida PANEL_TOKEN enviado no corpo
+  // Login legado: valida PANEL_TOKEN (admin vê todos os servidores)
   app.post("/auth/login", (req, res) => {
     const { token } = req.body || {};
 
@@ -52,34 +69,125 @@ export function startApiServer(client) {
       return res.status(401).json({ ok: false, error: "Token inválido." });
     }
 
-    // Não geramos sessão separada por enquanto; o próprio PANEL_TOKEN é o segredo.
     return res.json({ ok: true });
   });
 
-  // Middleware de auth para as demais rotas
-  app.use((req, res, next) => {
-    if (!ENV.PANEL_TOKEN) {
-      return res.status(500).json({
+  // OAuth2 Discord: redirect para autorização (redirect_uri = frontend)
+  app.get("/auth/discord", (req, res) => {
+    if (!ENV.CLIENT_ID || !ENV.DISCORD_CLIENT_SECRET || !ENV.PANEL_ORIGIN || !ENV.JWT_SECRET) {
+      return res.status(503).json({
         ok: false,
-        error: "PANEL_TOKEN não configurado no servidor.",
+        error: "Login com Discord não configurado (CLIENT_ID, DISCORD_CLIENT_SECRET, PANEL_ORIGIN, JWT_SECRET).",
       });
     }
+    const redirectUri = `${ENV.PANEL_ORIGIN.replace(/\/$/, "")}/auth/callback`;
+    const discordAuthUrl = new URL("https://discord.com/api/oauth2/authorize");
+    discordAuthUrl.searchParams.set("client_id", ENV.CLIENT_ID);
+    discordAuthUrl.searchParams.set("redirect_uri", redirectUri);
+    discordAuthUrl.searchParams.set("response_type", "code");
+    discordAuthUrl.searchParams.set("scope", "identify guilds");
+    res.redirect(discordAuthUrl.toString());
+  });
 
+  // POST /auth/callback: frontend envia code (recebido do Discord) e redirect_uri; backend troca por token e retorna JWT
+  app.post("/auth/callback", async (req, res) => {
+    const { code, redirect_uri: redirectUriParam } = req.body || {};
+    if (!ENV.CLIENT_ID || !ENV.DISCORD_CLIENT_SECRET || !ENV.JWT_SECRET) {
+      return res.status(503).json({ ok: false, error: "OAuth não configurado." });
+    }
+    const redirectUri = redirectUriParam || `${ENV.PANEL_ORIGIN.replace(/\/$/, "")}/auth/callback`;
+    if (!code || typeof code !== "string") {
+      return res.status(400).json({ ok: false, error: "code obrigatório." });
+    }
+    try {
+      const tokenRes = await fetch("https://discord.com/api/oauth2/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          client_id: ENV.CLIENT_ID,
+          client_secret: ENV.DISCORD_CLIENT_SECRET,
+          grant_type: "authorization_code",
+          code,
+          redirect_uri: redirectUri,
+        }),
+      });
+      const tokenData = await tokenRes.json();
+      if (tokenData.error) {
+        console.error("Discord token exchange error:", tokenData);
+        return res.status(401).json({ ok: false, error: "Falha ao trocar code por token." });
+      }
+      const accessToken = tokenData.access_token;
+      const userRes = await fetch("https://discord.com/api/v10/users/@me", {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      const userData = await userRes.json();
+      if (userData.id == null) {
+        return res.status(401).json({ ok: false, error: "Falha ao obter usuário." });
+      }
+      const guildsRes = await fetch("https://discord.com/api/v10/users/@me/guilds", {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      const guildsData = await guildsRes.json();
+      const MANAGE_GUILD = 0x20;
+      const ADMINISTRATOR = 0x8;
+      const botGuildIds = new Set(client.guilds.cache.map((g) => g.id));
+      const allowedGuildIds = (Array.isArray(guildsData) ? guildsData : [])
+        .filter((g) => (Number(g.permissions) & (MANAGE_GUILD | ADMINISTRATOR)) !== 0 && botGuildIds.has(g.id))
+        .map((g) => g.id);
+      userGuildsCache.set(userData.id, {
+        guildIds: allowedGuildIds,
+        expiresAt: Date.now() + USER_GUILDS_CACHE_TTL_MS,
+      });
+      const jwtToken = jwt.sign(
+        { userId: userData.id, username: userData.username },
+        ENV.JWT_SECRET,
+        { expiresIn: "7d" }
+      );
+      return res.json({ ok: true, token: jwtToken });
+    } catch (err) {
+      console.error("OAuth callback error:", err);
+      return res.status(500).json({ ok: false, error: "Erro interno." });
+    }
+  });
+
+  // Middleware de auth: aceita Bearer PANEL_TOKEN (legacy) ou Bearer JWT
+  app.use((req, res, next) => {
     const header = req.headers["authorization"] || "";
-    const expected = `Bearer ${ENV.PANEL_TOKEN}`;
+    const match = header.match(/^Bearer\s+(.+)$/i);
+    const token = match ? match[1].trim() : "";
 
-    if (header !== expected) {
-      return res.status(401).json({ ok: false, error: "Não autorizado." });
+    if (ENV.PANEL_TOKEN && token === ENV.PANEL_TOKEN) {
+      req.user = { legacyAdmin: true };
+      return next();
     }
 
-    return next();
+    if (ENV.JWT_SECRET && token) {
+      try {
+        const decoded = jwt.verify(token, ENV.JWT_SECRET);
+        const userId = decoded.userId;
+        const cached = userGuildsCache.get(userId);
+        if (!cached || Date.now() > cached.expiresAt) {
+          return res.status(401).json({ ok: false, error: "Sessão expirada. Faça login novamente." });
+        }
+        req.user = { userId, guildIds: cached.guildIds };
+        return next();
+      } catch {
+        // JWT inválido ou expirado
+      }
+    }
+
+    return res.status(401).json({ ok: false, error: "Não autorizado." });
   });
 
   // --- Guilds & Configs ---
 
   app.get("/guilds", (req, res) => {
     try {
-      const guilds = client.guilds.cache.map((g) => {
+      const allowedIds = getAllowedGuildIds(req);
+      const guildsArray = allowedIds === null
+        ? [...client.guilds.cache.values()]
+        : allowedIds.map((id) => client.guilds.cache.get(id)).filter(Boolean);
+      const guilds = guildsArray.map((g) => {
         const config = getGuildConfig(g.id);
         return {
           id: g.id,
@@ -95,6 +203,15 @@ export function startApiServer(client) {
       console.error("Erro em GET /guilds:", err);
       return res.status(500).json({ ok: false, error: "Erro interno." });
     }
+  });
+
+  // Middleware: bloqueia acesso a guild sem permissão
+  app.use("/guilds/:guildId", (req, res, next) => {
+    const { guildId } = req.params;
+    if (guildId && !canAccessGuild(req, guildId)) {
+      return res.status(403).json({ ok: false, error: "Sem permissão para este servidor." });
+    }
+    next();
   });
 
   app.get("/guilds/:guildId", (req, res) => {
