@@ -26,6 +26,12 @@ function migrateConfig(config) {
     needsSave = true;
   }
 
+  // Garante que tem songboard
+  if (config.songboard === undefined) {
+    config.songboard = [];
+    needsSave = true;
+  }
+
   // Garante que tem maxSoundDuration (padrão 15 segundos)
   if (config.maxSoundDuration === undefined) {
     config.maxSoundDuration = 15;
@@ -177,6 +183,7 @@ function ensureGuild(guildId) {
       logChannelId: null,
       protections: [],
       soundboard: [],
+      songboard: [],
       maxSoundDuration: 15, // Padrão: 15 segundos
       soundboardVolume: 40, // Padrão: 40%
       soundListButtonTimeout: 300, // Padrão: 300 segundos (5 minutos), null = ilimitado

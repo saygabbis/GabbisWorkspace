@@ -34,37 +34,39 @@ export async function onInteractionCreate(interaction) {
     const command = commands.get(interaction.commandName);
     if (!command) return;
 
-    // Autocomplete específico para /sound play/remove (nomes de áudios)
-    if (interaction.commandName === "sound" && interaction.guild) {
+    // Autocomplete específico para /sound e /song play/remove
+    if ((interaction.commandName === "sound" || interaction.commandName === "song") && interaction.guild) {
       const sub = interaction.options.getSubcommand(false);
       if (sub === "play" || sub === "remove") {
         try {
-          const { getSounds } = await import("../state/soundboard.js");
+          const modulePath = interaction.commandName === "sound"
+            ? "../state/soundboard.js"
+            : "../state/songboard.js";
+          const stateModule = await import(modulePath);
+          const getItems = interaction.commandName === "sound" ? stateModule.getSounds : stateModule.getSongs;
           const guildId = interaction.guild.id;
           const focused = interaction.options.getFocused() || "";
 
-          const sounds = getSounds(guildId);
+          const items = getItems(guildId);
           const normalized = focused.toLowerCase();
 
-          const filtered = sounds
-            .filter((s) =>
-              s.name.toLowerCase().includes(normalized)
-            )
+          const filtered = items
+            .filter((s) => s.name.toLowerCase().includes(normalized))
             .slice(0, 25);
 
-          const choices = filtered.map((sound, index) => {
-            const globalIndex = sounds.indexOf(sound);
+          const choices = filtered.map((item, index) => {
+            const globalIndex = items.indexOf(item);
             const number = globalIndex >= 0 ? globalIndex + 1 : index + 1;
-            const emojiDisplay = sound.emoji ? `${sound.emoji} ` : "";
+            const emojiDisplay = item.emoji ? `${item.emoji} ` : "";
             return {
-              name: `${number}. ${emojiDisplay}${sound.name}`,
-              value: sound.name,
+              name: `${number}. ${emojiDisplay}${item.name}`,
+              value: item.name,
             };
           });
 
           await interaction.respond(choices);
         } catch (err) {
-          console.error("Erro no autocomplete de /sound:", err);
+          console.error(`Erro no autocomplete de /${interaction.commandName}:`, err);
           try {
             await interaction.respond([]);
           } catch {
